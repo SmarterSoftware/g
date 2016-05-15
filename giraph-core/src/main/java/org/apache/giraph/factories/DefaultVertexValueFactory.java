@@ -18,7 +18,6 @@
 
 package org.apache.giraph.factories;
 
-import org.apache.giraph.conf.GiraphConfigurationSettable;
 import org.apache.giraph.conf.ImmutableClassesGiraphConfiguration;
 import org.apache.giraph.utils.WritableUtils;
 import org.apache.hadoop.io.Writable;
@@ -30,20 +29,23 @@ import org.apache.hadoop.io.Writable;
  * @param <V> Vertex value
  */
 public class DefaultVertexValueFactory<V extends Writable>
-    implements VertexValueFactory<V>, GiraphConfigurationSettable {
+    implements VertexValueFactory<V> {
   /** Cached vertex value class. */
   private Class<V> vertexValueClass;
-  /** Configuration */
-  private ImmutableClassesGiraphConfiguration conf;
 
   @Override
-  public void setConf(ImmutableClassesGiraphConfiguration conf) {
-    this.conf = conf;
+  public void initialize(ImmutableClassesGiraphConfiguration conf) {
     vertexValueClass = conf.getVertexValueClass();
   }
 
   @Override
+  public Class<V> getValueClass() {
+    return vertexValueClass;
+  }
+
+  @Override
   public V newInstance() {
-    return WritableUtils.createWritable(vertexValueClass, conf);
+    return WritableUtils.createWritable(vertexValueClass);
   }
 }
+

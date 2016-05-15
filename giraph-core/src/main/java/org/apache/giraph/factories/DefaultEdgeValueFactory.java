@@ -17,7 +17,6 @@
  */
 package org.apache.giraph.factories;
 
-import org.apache.giraph.conf.GiraphConfigurationSettable;
 import org.apache.giraph.conf.ImmutableClassesGiraphConfiguration;
 import org.apache.giraph.utils.WritableUtils;
 import org.apache.hadoop.io.Writable;
@@ -30,19 +29,19 @@ import org.apache.hadoop.io.Writable;
  * @param <E> Edge Value
  */
 public class DefaultEdgeValueFactory<E extends Writable>
-    implements EdgeValueFactory<E>, GiraphConfigurationSettable {
+    implements EdgeValueFactory<E> {
   /** Cached edge value class. */
   private Class<E> edgeValueClass;
-  /** Configuration */
-  private ImmutableClassesGiraphConfiguration conf;
 
-  @Override
-  public void setConf(ImmutableClassesGiraphConfiguration conf) {
-    this.conf = conf;
+  @Override public void initialize(ImmutableClassesGiraphConfiguration conf) {
     edgeValueClass = conf.getEdgeValueClass();
   }
 
+  @Override public Class<E> getValueClass() {
+    return edgeValueClass;
+  }
+
   @Override public E newInstance() {
-    return WritableUtils.createWritable(edgeValueClass, conf);
+    return WritableUtils.createWritable(edgeValueClass);
   }
 }

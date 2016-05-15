@@ -19,16 +19,15 @@
 package org.apache.giraph.combiner;
 
 import org.apache.hadoop.io.IntWritable;
-import org.apache.hadoop.io.WritableComparable;
 
 /**
  * {@link MessageCombiner} that finds the minimum {@link IntWritable}
  */
 public class MinimumIntMessageCombiner
-    implements MessageCombiner<WritableComparable, IntWritable> {
+    extends MessageCombiner<IntWritable, IntWritable> {
   @Override
-  public void combine(WritableComparable vertexIndex,
-      IntWritable originalMessage, IntWritable messageToCombine) {
+  public void combine(IntWritable vertexIndex, IntWritable originalMessage,
+      IntWritable messageToCombine) {
     if (originalMessage.get() > messageToCombine.get()) {
       originalMessage.set(messageToCombine.get());
     }

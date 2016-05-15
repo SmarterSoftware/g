@@ -28,7 +28,7 @@ import java.util.Map;
 
 /**
  * Aggregates the mutations to be sent to partitions so they can be sent in
- * bulk. Not thread-safe.
+ * bulk.
  *
  * @param <I> Vertex id
  * @param <V> Vertex data

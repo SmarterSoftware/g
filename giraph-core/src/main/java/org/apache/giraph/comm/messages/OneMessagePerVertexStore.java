@@ -27,12 +27,12 @@ import java.util.concurrent.ConcurrentMap;
 import org.apache.giraph.bsp.CentralizedServiceWorker;
 import org.apache.giraph.combiner.MessageCombiner;
 import org.apache.giraph.conf.ImmutableClassesGiraphConfiguration;
-import org.apache.giraph.conf.MessageClasses;
 import org.apache.giraph.factories.MessageValueFactory;
 import org.apache.giraph.utils.VertexIdMessageIterator;
 import org.apache.giraph.utils.VertexIdMessages;
 import org.apache.hadoop.io.Writable;
 import org.apache.hadoop.io.WritableComparable;
+import org.apache.hadoop.io.WritableUtils;
 
 /**
  * Implementation of {@link SimpleMessageStore} where we have a single
@@ -45,7 +45,7 @@ import org.apache.hadoop.io.WritableComparable;
 public class OneMessagePerVertexStore<I extends WritableComparable,
     M extends Writable> extends SimpleMessageStore<I, M, M> {
   /** MessageCombiner for messages */
-  private final MessageCombiner<? super I, M> messageCombiner;
+  private final MessageCombiner<I, M> messageCombiner;
 
   /**
    * @param messageValueFactory Message class held in the store
@@ -53,10 +53,10 @@ public class OneMessagePerVertexStore<I extends WritableComparable,
    * @param messageCombiner MessageCombiner for messages
    * @param config Hadoop configuration
    */
-  public OneMessagePerVertexStore(
+  OneMessagePerVertexStore(
       MessageValueFactory<M> messageValueFactory,
       CentralizedServiceWorker<I, ?, ?> service,
-      MessageCombiner<? super I, M> messageCombiner,
+      MessageCombiner<I, M> messageCombiner,
       ImmutableClassesGiraphConfiguration<I, ?, ?> config) {
     super(messageValueFactory, service, config);
     this.messageCombiner =
@@ -64,8 +64,24 @@ public class OneMessagePerVertexStore<I extends WritableComparable,
   }
 
   @Override
-  public boolean isPointerListEncoding() {
-    return false;
+  public void addPartitionMessage(
+      int partitionId, I destVertexId, M message) throws IOException {
+    ConcurrentMap<I, M> partitionMap =
+        getOrCreatePartitionMap(partitionId);
+
+    M currentMessage = partitionMap.get(destVertexId);
+    if (currentMessage == null) {
+      M newMessage = messageCombiner.createInitialMessage();
+      // YH: always clone destVertexId
+      currentMessage = partitionMap.putIfAbsent(
+          WritableUtils.clone(destVertexId, config), newMessage);
+      if (currentMessage == null) {
+        currentMessage = newMessage;
+      }
+    }
+    synchronized (currentMessage) {
+      messageCombiner.combine(destVertexId, currentMessage, message);
+    }
   }
 
   @Override
@@ -100,7 +116,9 @@ public class OneMessagePerVertexStore<I extends WritableComparable,
 
   @Override
   protected Iterable<M> getMessagesAsIterable(M message) {
-    return Collections.singleton(message);
+    synchronized (message) {
+      return Collections.singleton(message);
+    }
   }
 
   @Override
@@ -110,11 +128,13 @@ public class OneMessagePerVertexStore<I extends WritableComparable,
 
   @Override
   protected void writeMessages(M messages, DataOutput out) throws IOException {
+    // YH: used by single thread
     messages.write(out);
   }
 
   @Override
   protected M readFieldsForMessages(DataInput in) throws IOException {
+    // YH: used by single thread
     M message = messageValueFactory.newInstance();
     message.readFields(in);
     return message;
@@ -163,10 +183,9 @@ public class OneMessagePerVertexStore<I extends WritableComparable,
 
     @Override
     public MessageStore<I, M> newStore(
-        MessageClasses<I, M> messageClasses) {
-      return new OneMessagePerVertexStore<I, M>(
-          messageClasses.createMessageValueFactory(config), service,
-          messageClasses.createMessageCombiner(config), config);
+        MessageValueFactory<M> messageValueFactory) {
+      return new OneMessagePerVertexStore<I, M>(messageValueFactory, service,
+          config.<M>createMessageCombiner(), config);
     }
 
     @Override

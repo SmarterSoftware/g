@@ -21,15 +21,16 @@ package org.apache.giraph.bsp;
 import org.apache.giraph.conf.GiraphConstants;
 import org.apache.giraph.conf.ImmutableClassesGiraphConfiguration;
 import org.apache.giraph.graph.GraphTaskManager;
-import org.apache.giraph.job.JobProgressTracker;
+import org.apache.giraph.graph.InputSplitEvents;
+import org.apache.giraph.graph.InputSplitPaths;
 import org.apache.giraph.partition.GraphPartitionerFactory;
-import org.apache.giraph.utils.CheckpointingUtils;
 import org.apache.giraph.worker.WorkerInfo;
 import org.apache.giraph.zk.BspEvent;
 import org.apache.giraph.zk.PredicateLock;
 import org.apache.giraph.zk.ZooKeeperExt;
 import org.apache.giraph.zk.ZooKeeperManager;
 import org.apache.hadoop.fs.FileSystem;
+import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.io.Writable;
 import org.apache.hadoop.io.WritableComparable;
 import org.apache.hadoop.mapreduce.Mapper;
@@ -47,11 +48,12 @@ import org.json.JSONObject;
 import java.io.IOException;
 import java.net.UnknownHostException;
 import java.nio.charset.Charset;
+import java.security.InvalidParameterException;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 
-import static org.apache.giraph.conf.GiraphConstants.RESTART_JOB_ID;
+import static org.apache.giraph.conf.GiraphConstants.CHECKPOINT_DIRECTORY;
 
 /**
  * Zookeeper-based implementation of {@link CentralizedService}.
@@ -75,13 +77,59 @@ public abstract class BspService<I extends WritableComparable,
   /** Master job state znode above base dir */
   public static final String MASTER_JOB_STATE_NODE = "/_masterJobState";
 
-  /** Input splits worker done directory */
-  public static final String INPUT_SPLITS_WORKER_DONE_DIR =
-      "/_inputSplitsWorkerDoneDir";
-  /** Input splits all done node*/
-  public static final String INPUT_SPLITS_ALL_DONE_NODE =
-      "/_inputSplitsAllDone";
+  /** Mapping input split directory about base dir */
+  public static final String MAPPING_INPUT_SPLIT_DIR = "/_mappingInputSplitDir";
+  /** Mapping input split done directory about base dir */
+  public static final String MAPPING_INPUT_SPLIT_DONE_DIR =
+      "/_mappingInputSplitDoneDir";
+  /** Denotes a reserved mapping input split */
+  public static final String MAPPING_INPUT_SPLIT_RESERVED_NODE =
+      "/_mappingInputSplitReserved";
+  /** Denotes a finished mapping input split */
+  public static final String MAPPING_INPUT_SPLIT_FINISHED_NODE =
+      "/_mappingInputSplitFinished";
+  /** Denotes that all the mapping input splits are are ready for consumption */
+  public static final String MAPPING_INPUT_SPLITS_ALL_READY_NODE =
+      "/_mappingInputSplitsAllReady";
+  /** Denotes that all the mapping input splits are done. */
+  public static final String MAPPING_INPUT_SPLITS_ALL_DONE_NODE =
+      "/_mappingInputSplitsAllDone";
 
+  /** Vertex input split directory about base dir */
+  public static final String VERTEX_INPUT_SPLIT_DIR = "/_vertexInputSplitDir";
+  /** Vertex input split done directory about base dir */
+  public static final String VERTEX_INPUT_SPLIT_DONE_DIR =
+      "/_vertexInputSplitDoneDir";
+  /** Denotes a reserved vertex input split */
+  public static final String VERTEX_INPUT_SPLIT_RESERVED_NODE =
+      "/_vertexInputSplitReserved";
+  /** Denotes a finished vertex input split */
+  public static final String VERTEX_INPUT_SPLIT_FINISHED_NODE =
+      "/_vertexInputSplitFinished";
+  /** Denotes that all the vertex input splits are are ready for consumption */
+  public static final String VERTEX_INPUT_SPLITS_ALL_READY_NODE =
+      "/_vertexInputSplitsAllReady";
+  /** Denotes that all the vertex input splits are done. */
+  public static final String VERTEX_INPUT_SPLITS_ALL_DONE_NODE =
+      "/_vertexInputSplitsAllDone";
+
+  /** Edge input split directory about base dir */
+  public static final String EDGE_INPUT_SPLIT_DIR = "/_edgeInputSplitDir";
+  /** Edge input split done directory about base dir */
+  public static final String EDGE_INPUT_SPLIT_DONE_DIR =
+      "/_edgeInputSplitDoneDir";
+  /** Denotes a reserved edge input split */
+  public static final String EDGE_INPUT_SPLIT_RESERVED_NODE =
+      "/_edgeInputSplitReserved";
+  /** Denotes a finished edge input split */
+  public static final String EDGE_INPUT_SPLIT_FINISHED_NODE =
+      "/_edgeInputSplitFinished";
+  /** Denotes that all the edge input splits are are ready for consumption */
+  public static final String EDGE_INPUT_SPLITS_ALL_READY_NODE =
+      "/_edgeInputSplitsAllReady";
+  /** Denotes that all the edge input splits are done. */
+  public static final String EDGE_INPUT_SPLITS_ALL_DONE_NODE =
+      "/_edgeInputSplitsAllDone";
   /** Directory of attempts of this application */
   public static final String APPLICATION_ATTEMPTS_DIR =
       "/_applicationAttemptsDir";
@@ -99,6 +147,9 @@ public abstract class BspService<I extends WritableComparable,
   /** Workers which wrote checkpoint notify here */
   public static final String WORKER_WROTE_CHECKPOINT_DIR =
       "/_workerWroteCheckpointDir";
+  /** YH: Ready to finish workers notify here */
+  public static final String WORKER_READY_TO_FINISH_DIR =
+    "/_workerReadyToFinishDir";
   /** Finished workers notify here */
   public static final String WORKER_FINISHED_DIR = "/_workerFinishedDir";
   /** Where the master and worker addresses and partition assignments are set */
@@ -107,14 +158,15 @@ public abstract class BspService<I extends WritableComparable,
   /** Helps coordinate the partition exchnages */
   public static final String PARTITION_EXCHANGE_DIR =
       "/_partitionExchangeDir";
+  /** YH: Denotes that the pre-"superstep finish" barrier is done */
+  public static final String SUPERSTEP_READY_TO_FINISH_NODE =
+    "/_superstepReadyToFinish";
   /** Denotes that the superstep is done */
   public static final String SUPERSTEP_FINISHED_NODE = "/_superstepFinished";
+  /** Stores progress info for workers */
+  public static final String WORKER_PROGRESSES = "/_workerProgresses";
   /** Denotes that computation should be halted */
   public static final String HALT_COMPUTATION_NODE = "/_haltComputation";
-  /** Memory observer dir */
-  public static final String MEMORY_OBSERVER_DIR = "/_memoryObserver";
-  /** User sets this flag to checkpoint and stop the job */
-  public static final String FORCE_CHECKPOINT_USER_FLAG = "/_checkpointAndStop";
   /** Denotes which workers have been cleaned up */
   public static final String CLEANED_UP_DIR = "/_cleanedUpDir";
   /** JSON partition stats key */
@@ -139,31 +191,53 @@ public abstract class BspService<I extends WritableComparable,
   public static final String WORKER_SUFFIX = "_worker";
   /** Suffix denotes a master */
   public static final String MASTER_SUFFIX = "_master";
-
+  /** If at the end of a checkpoint file, indicates metadata */
+  public static final String CHECKPOINT_METADATA_POSTFIX = ".metadata";
+  /**
+   * If at the end of a checkpoint file, indicates vertices, edges,
+   * messages, etc.
+   */
+  public static final String CHECKPOINT_VERTICES_POSTFIX = ".vertices";
+  /**
+   * If at the end of a checkpoint file, indicates metadata and data is valid
+   * for the same filenames without .valid
+   */
+  public static final String CHECKPOINT_VALID_POSTFIX = ".valid";
+  /**
+   * If at the end of a checkpoint file, indicates the stitched checkpoint
+   * file prefixes.  A checkpoint is not valid if this file does not exist.
+   */
+  public static final String CHECKPOINT_FINALIZED_POSTFIX = ".finalized";
   /** Class logger */
   private static final Logger LOG = Logger.getLogger(BspService.class);
   /** Path to the job's root */
   protected final String basePath;
   /** Path to the job state determined by the master (informative only) */
   protected final String masterJobStatePath;
-  /** Input splits worker done directory */
-  protected final String inputSplitsWorkerDonePath;
-  /** Input splits all done node */
-  protected final String inputSplitsAllDonePath;
+  /** ZooKeeper paths for mapping input splits. */
+  protected final InputSplitPaths mappingInputSplitsPaths;
+  /** ZooKeeper paths for vertex input splits. */
+  protected final InputSplitPaths vertexInputSplitsPaths;
+  /** ZooKeeper paths for edge input splits. */
+  protected final InputSplitPaths edgeInputSplitsPaths;
+  /** Mapping input splits events */
+  protected final InputSplitEvents mappingInputSplitsEvents;
+  /** Vertex input split events. */
+  protected final InputSplitEvents vertexInputSplitsEvents;
+  /** Edge input split events. */
+  protected final InputSplitEvents edgeInputSplitsEvents;
   /** Path to the application attempts) */
   protected final String applicationAttemptsPath;
   /** Path to the cleaned up notifications */
   protected final String cleanedUpPath;
   /** Path to the checkpoint's root (including job id) */
   protected final String checkpointBasePath;
-  /** Old checkpoint in case we want to restart some job */
-  protected final String savedCheckpointBasePath;
   /** Path to the master election path */
   protected final String masterElectionPath;
+  /** Stores progress info of this worker */
+  protected final String myProgressPath;
   /** If this path exists computation will be halted */
   protected final String haltComputationPath;
-  /** Path where memory observer stores data */
-  protected final String memoryObserverPath;
   /** Private ZooKeeper instance that implements the service */
   private final ZooKeeperExt zk;
   /** Has the Connection occurred? */
@@ -174,10 +248,8 @@ public abstract class BspService<I extends WritableComparable,
   private final BspEvent addressesAndPartitionsReadyChanged;
   /** Application attempt changed */
   private final BspEvent applicationAttemptChanged;
-  /** Input splits worker done */
-  private final BspEvent inputSplitsWorkerDoneEvent;
-  /** Input splits all done */
-  private final BspEvent inputSplitsAllDoneEvent;
+  /** YH: Pre-"superstep finished" synchronization */
+  private final BspEvent superstepReadyToFinish;
   /** Superstep finished synchronization */
   private final BspEvent superstepFinished;
   /** Master election changed for any waited on attempt */
@@ -193,6 +265,8 @@ public abstract class BspService<I extends WritableComparable,
   private final Mapper<?, ?, ?, ?>.Context context;
   /** Cached superstep (from ZooKeeper) */
   private long cachedSuperstep = UNSET_SUPERSTEP;
+  /** YH: Logical superstep of this worker (NOT global) */
+  private long logicalSuperstep = UNSET_SUPERSTEP;
   /** Restarted from a checkpoint (manual or automatic) */
   private long restartedSuperstep = UNSET_SUPERSTEP;
   /** Cached application attempt (from ZooKeeper) */
@@ -211,6 +285,8 @@ public abstract class BspService<I extends WritableComparable,
   private final GraphTaskManager<I, V, E> graphTaskManager;
   /** File system */
   private final FileSystem fs;
+  /** Checkpoint frequency */
+  private final int checkpointFrequency;
 
   /**
    * Constructor.
@@ -221,22 +297,27 @@ public abstract class BspService<I extends WritableComparable,
   public BspService(
       Mapper<?, ?, ?, ?>.Context context,
       GraphTaskManager<I, V, E> graphTaskManager) {
+    this.mappingInputSplitsEvents = new InputSplitEvents(context);
+    this.vertexInputSplitsEvents = new InputSplitEvents(context);
+    this.edgeInputSplitsEvents = new InputSplitEvents(context);
     this.connectedEvent = new PredicateLock(context);
     this.workerHealthRegistrationChanged = new PredicateLock(context);
     this.addressesAndPartitionsReadyChanged = new PredicateLock(context);
     this.applicationAttemptChanged = new PredicateLock(context);
-    this.inputSplitsWorkerDoneEvent = new PredicateLock(context);
-    this.inputSplitsAllDoneEvent = new PredicateLock(context);
+    this.superstepReadyToFinish = new PredicateLock(context);
     this.superstepFinished = new PredicateLock(context);
     this.masterElectionChildrenChanged = new PredicateLock(context);
     this.cleanedUpChildrenChanged = new PredicateLock(context);
 
     registerBspEvent(connectedEvent);
     registerBspEvent(workerHealthRegistrationChanged);
-    registerBspEvent(inputSplitsWorkerDoneEvent);
-    registerBspEvent(inputSplitsAllDoneEvent);
+    registerBspEvent(vertexInputSplitsEvents.getAllReadyChanged());
+    registerBspEvent(vertexInputSplitsEvents.getStateChanged());
+    registerBspEvent(edgeInputSplitsEvents.getAllReadyChanged());
+    registerBspEvent(edgeInputSplitsEvents.getStateChanged());
     registerBspEvent(addressesAndPartitionsReadyChanged);
     registerBspEvent(applicationAttemptChanged);
+    registerBspEvent(superstepReadyToFinish);
     registerBspEvent(superstepFinished);
     registerBspEvent(masterElectionChildrenChanged);
     registerBspEvent(cleanedUpChildrenChanged);
@@ -248,6 +329,14 @@ public abstract class BspService<I extends WritableComparable,
     this.taskPartition = conf.getTaskPartition();
     this.restartedSuperstep = conf.getLong(
         GiraphConstants.RESTART_SUPERSTEP, UNSET_SUPERSTEP);
+    this.cachedSuperstep = restartedSuperstep;
+    this.logicalSuperstep = cachedSuperstep;
+    if ((restartedSuperstep != UNSET_SUPERSTEP) &&
+        (restartedSuperstep < 0)) {
+      throw new IllegalArgumentException(
+          "BspService: Invalid superstep to restart - " +
+              restartedSuperstep);
+    }
     try {
       this.hostname = conf.getLocalHostname();
     } catch (UnknownHostException e) {
@@ -256,28 +345,31 @@ public abstract class BspService<I extends WritableComparable,
     this.hostnamePartitionId = hostname + "_" + getTaskPartition();
     this.graphPartitionerFactory = conf.createGraphPartitioner();
 
+    this.checkpointFrequency = conf.getCheckpointFrequency();
+
     basePath = ZooKeeperManager.getBasePath(conf) + BASE_DIR + "/" + jobId;
     getContext().getCounter(GiraphConstants.ZOOKEEPER_BASE_PATH_COUNTER_GROUP,
         basePath);
     masterJobStatePath = basePath + MASTER_JOB_STATE_NODE;
-    inputSplitsWorkerDonePath = basePath + INPUT_SPLITS_WORKER_DONE_DIR;
-    inputSplitsAllDonePath = basePath + INPUT_SPLITS_ALL_DONE_NODE;
+    mappingInputSplitsPaths = new InputSplitPaths(basePath,
+        MAPPING_INPUT_SPLIT_DIR, MAPPING_INPUT_SPLIT_DONE_DIR,
+        MAPPING_INPUT_SPLITS_ALL_READY_NODE,
+        MAPPING_INPUT_SPLITS_ALL_DONE_NODE);
+    vertexInputSplitsPaths = new InputSplitPaths(basePath,
+        VERTEX_INPUT_SPLIT_DIR, VERTEX_INPUT_SPLIT_DONE_DIR,
+        VERTEX_INPUT_SPLITS_ALL_READY_NODE, VERTEX_INPUT_SPLITS_ALL_DONE_NODE);
+    edgeInputSplitsPaths = new InputSplitPaths(basePath,
+        EDGE_INPUT_SPLIT_DIR, EDGE_INPUT_SPLIT_DONE_DIR,
+        EDGE_INPUT_SPLITS_ALL_READY_NODE, EDGE_INPUT_SPLITS_ALL_DONE_NODE);
     applicationAttemptsPath = basePath + APPLICATION_ATTEMPTS_DIR;
     cleanedUpPath = basePath + CLEANED_UP_DIR;
-
-    String restartJobId = RESTART_JOB_ID.get(conf);
-
-    savedCheckpointBasePath =
-        CheckpointingUtils.getCheckpointBasePath(getConfiguration(),
-            restartJobId == null ? getJobId() : restartJobId);
-
-    checkpointBasePath = CheckpointingUtils.
-        getCheckpointBasePath(getConfiguration(), getJobId());
-
+    checkpointBasePath =
+        CHECKPOINT_DIRECTORY.getWithDefault(getConfiguration(),
+            CHECKPOINT_DIRECTORY.getDefaultValue() + "/" + getJobId());
     masterElectionPath = basePath + MASTER_ELECTION_DIR;
+    myProgressPath = basePath + WORKER_PROGRESSES + "/" + taskPartition;
     String serverPortList = conf.getZookeeperList();
     haltComputationPath = basePath + HALT_COMPUTATION_NODE;
-    memoryObserverPath = basePath + MEMORY_OBSERVER_DIR;
     getContext().getCounter(GiraphConstants.ZOOKEEPER_HALT_NODE_COUNTER_GROUP,
         haltComputationPath);
     if (LOG.isInfoEnabled()) {
@@ -298,23 +390,6 @@ public abstract class BspService<I extends WritableComparable,
       this.fs = FileSystem.get(getConfiguration());
     } catch (IOException e) {
       throw new RuntimeException(e);
-    }
-
-    //Trying to restart from the latest superstep
-    if (restartJobId != null &&
-        restartedSuperstep == UNSET_SUPERSTEP) {
-      try {
-        restartedSuperstep = getLastCheckpointedSuperstep();
-      } catch (IOException e) {
-        throw new RuntimeException(e);
-      }
-    }
-    this.cachedSuperstep = restartedSuperstep;
-    if ((restartedSuperstep != UNSET_SUPERSTEP) &&
-        (restartedSuperstep < 0)) {
-      throw new IllegalArgumentException(
-          "BspService: Invalid superstep to restart - " +
-              restartedSuperstep);
     }
   }
 
@@ -375,6 +450,24 @@ public abstract class BspService<I extends WritableComparable,
   }
 
   /**
+   * Get the input split events for edge input.
+   *
+   * @return InputSplitEvents for edge input.
+   */
+  public InputSplitEvents getEdgeInputSplitsEvents() {
+    return edgeInputSplitsEvents;
+  }
+
+  /**
+   * Get the input split events for vertex input.
+   *
+   * @return InputSplitEvents for vertex input.
+   */
+  public InputSplitEvents getVertexInputSplitsEvents() {
+    return vertexInputSplitsEvents;
+  }
+
+  /**
    * Generate the worker information "healthy" directory path for a
    * superstep
    *
@@ -414,6 +507,20 @@ public abstract class BspService<I extends WritableComparable,
       long superstep) {
     return applicationAttemptsPath + "/" + attempt +
         SUPERSTEP_DIR + "/" + superstep + WORKER_WROTE_CHECKPOINT_DIR;
+  }
+
+  /**
+   * YH: Generate the worker "ready to finish" directory path for a
+   * superstep
+   *
+   * @param attempt application attempt number
+   * @param superstep superstep to use
+   * @return directory path based on the a superstep
+   */
+  public final String getWorkerReadyToFinishPath(long attempt,
+                                                 long superstep) {
+    return applicationAttemptsPath + "/" + attempt +
+        SUPERSTEP_DIR + "/" + superstep + WORKER_READY_TO_FINISH_DIR;
   }
 
   /**
@@ -472,6 +579,20 @@ public abstract class BspService<I extends WritableComparable,
   }
 
   /**
+   * YH: Generate the "superstep ready to finish" directory path
+   * for a superstep
+   *
+   * @param attempt application attempt number
+   * @param superstep superstep to use
+   * @return directory path based on the a superstep
+   */
+  public final String getSuperstepReadyToFinishPath(long attempt,
+                                                    long superstep) {
+    return applicationAttemptsPath + "/" + attempt +
+        SUPERSTEP_DIR + "/" + superstep + SUPERSTEP_READY_TO_FINISH_NODE;
+  }
+
+  /**
    * Generate the "superstep finished" directory path for a superstep
    *
    * @param attempt application attempt number
@@ -495,15 +616,21 @@ public abstract class BspService<I extends WritableComparable,
   }
 
   /**
-   * In case when we restart another job this will give us a path
-   * to saved checkpoint.
-   * @param superstep superstep to use
-   * @return Direcory path for restarted job based on the superstep
+   * Get the checkpoint from a finalized checkpoint path
+   *
+   * @param finalizedPath Path of the finalized checkpoint
+   * @return Superstep referring to a checkpoint of the finalized path
    */
-  public final String getSavedCheckpointBasePath(long superstep) {
-    return savedCheckpointBasePath + "/" + superstep;
+  public static long getCheckpoint(Path finalizedPath) {
+    if (!finalizedPath.getName().endsWith(CHECKPOINT_FINALIZED_POSTFIX)) {
+      throw new InvalidParameterException(
+          "getCheckpoint: " + finalizedPath + "Doesn't end in " +
+              CHECKPOINT_FINALIZED_POSTFIX);
+    }
+    String checkpointString =
+        finalizedPath.getName().replace(CHECKPOINT_FINALIZED_POSTFIX, "");
+    return Long.parseLong(checkpointString);
   }
-
 
   /**
    * Get the ZooKeeperExt instance.
@@ -530,6 +657,28 @@ public abstract class BspService<I extends WritableComparable,
           "setRestartedSuperstep: Bad argument " + superstep);
     }
     restartedSuperstep = superstep;
+  }
+
+  /**
+   * Should checkpoint on this superstep?  If checkpointing, always
+   * checkpoint the first user superstep.  If restarting, the first
+   * checkpoint is after the frequency has been met.
+   *
+   * @param superstep Decide if checkpointing no this superstep
+   * @return True if this superstep should be checkpointed, false otherwise
+   */
+  public final boolean checkpointFrequencyMet(long superstep) {
+    if (checkpointFrequency == 0) {
+      return false;
+    }
+    long firstCheckpoint = INPUT_SUPERSTEP + 1;
+    if (getRestartedSuperstep() != UNSET_SUPERSTEP) {
+      firstCheckpoint = getRestartedSuperstep() + checkpointFrequency;
+    }
+    if (superstep < firstCheckpoint) {
+      return false;
+    }
+    return ((superstep - firstCheckpoint) % checkpointFrequency) == 0;
   }
 
   /**
@@ -579,12 +728,8 @@ public abstract class BspService<I extends WritableComparable,
     return applicationAttemptChanged;
   }
 
-  public final BspEvent getInputSplitsWorkerDoneEvent() {
-    return inputSplitsWorkerDoneEvent;
-  }
-
-  public final BspEvent getInputSplitsAllDoneEvent() {
-    return inputSplitsAllDoneEvent;
+  public final BspEvent getSuperstepReadyToFinishEvent() {
+    return superstepReadyToFinish;
   }
 
   public final BspEvent getSuperstepFinishedEvent() {
@@ -712,6 +857,7 @@ public abstract class BspService<I extends WritableComparable,
    *
    * @return the latest superstep
    */
+  @Override
   public final long getSuperstep() {
     if (cachedSuperstep != UNSET_SUPERSTEP) {
       return cachedSuperstep;
@@ -754,19 +900,28 @@ public abstract class BspService<I extends WritableComparable,
           Long.parseLong(Collections.max(superstepList));
     }
 
+    // YH: special case---need to set logical SS too
+    if (logicalSuperstep == UNSET_SUPERSTEP) {
+      logicalSuperstep = cachedSuperstep;
+    }
+
     return cachedSuperstep;
   }
 
   /**
-   * Increment the cached superstep.  Shouldn't be the initial value anymore.
+   * Increment the cached superstep. Shouldn't be the initial value anymore.
+   * YH: this also increments the logical superstep (the two must be identical
+   * if using regular BSP execution).
    */
   public final void incrCachedSuperstep() {
-    if (cachedSuperstep == UNSET_SUPERSTEP) {
+    if (cachedSuperstep == UNSET_SUPERSTEP ||
+        logicalSuperstep == UNSET_SUPERSTEP) {
       throw new IllegalStateException(
           "incrSuperstep: Invalid unset cached superstep " +
               UNSET_SUPERSTEP);
     }
     ++cachedSuperstep;
+    ++logicalSuperstep;
   }
 
   /**
@@ -777,6 +932,31 @@ public abstract class BspService<I extends WritableComparable,
    */
   public final void setCachedSuperstep(long superstep) {
     cachedSuperstep = superstep;
+    // YH: no checkpointing is implemented between logical supersteps,
+    // so we start from scratch, from this barrier. (Even when checkpointing
+    // is supported, it will require a global barrier to serialize
+    // everything => cachedSuperstep == logicalSuperstep)
+    logicalSuperstep = cachedSuperstep;
+  }
+
+  @Override
+  public final long getLogicalSuperstep() {
+    return logicalSuperstep;
+  }
+
+  /**
+   * YH: Increment the logical superstep.
+   *
+   * Note that this can be incremented independently of the cached
+   * global superstep counter, which is used for coordination.
+   */
+  public final void incrLogicalSuperstep() {
+    if (logicalSuperstep == UNSET_SUPERSTEP) {
+      throw new IllegalStateException(
+          "incrLogicalSuperstep: Invalid unset logical superstep " +
+              UNSET_SUPERSTEP);
+    }
+    ++logicalSuperstep;
   }
 
   /**
@@ -884,20 +1064,9 @@ public abstract class BspService<I extends WritableComparable,
       }
       workerHealthRegistrationChanged.signal();
       eventProcessed = true;
-    } else if (event.getPath().contains(INPUT_SPLITS_ALL_DONE_NODE) &&
-        event.getType() == EventType.NodeCreated) {
-      if (LOG.isInfoEnabled()) {
-        LOG.info("process: all input splits done");
-      }
-      inputSplitsAllDoneEvent.signal();
-      eventProcessed = true;
-    } else if (event.getPath().contains(INPUT_SPLITS_WORKER_DONE_DIR) &&
-        event.getType() == EventType.NodeChildrenChanged) {
-      if (LOG.isDebugEnabled()) {
-        LOG.debug("process: worker done reading input splits");
-      }
-      inputSplitsWorkerDoneEvent.signal();
-      eventProcessed = true;
+    } else if (processMappingEvent(event) || processVertexEvent(event) ||
+        processEdgeEvent(event)) {
+      return;
     } else if (event.getPath().contains(ADDRESSES_AND_PARTITIONS_DIR) &&
         event.getType() == EventType.NodeCreated) {
       if (LOG.isInfoEnabled()) {
@@ -905,6 +1074,14 @@ public abstract class BspService<I extends WritableComparable,
             "(partitions are assigned)");
       }
       addressesAndPartitionsReadyChanged.signal();
+      eventProcessed = true;
+    } else if (event.getPath().contains(SUPERSTEP_READY_TO_FINISH_NODE) &&
+        event.getType() == EventType.NodeCreated) {
+      // YH: this is only used for async w/ barriers disabled
+      if (LOG.isInfoEnabled()) {
+        LOG.info("process: superstepReadyToFinish signaled");
+      }
+      superstepReadyToFinish.signal();
       eventProcessed = true;
     } else if (event.getPath().contains(SUPERSTEP_FINISHED_NODE) &&
         event.getType() == EventType.NodeCreated) {
@@ -944,41 +1121,188 @@ public abstract class BspService<I extends WritableComparable,
   }
 
   /**
-   * Get the last saved superstep.
+   * Process WatchedEvent for Mapping Inputsplits
    *
-   * @return Last good superstep number
-   * @throws IOException
+   * @param event watched event
+   * @return true if event processed
    */
-  protected long getLastCheckpointedSuperstep() throws IOException {
-    return CheckpointingUtils.getLastCheckpointedSuperstep(getFs(),
-        savedCheckpointBasePath);
+  public final boolean processMappingEvent(WatchedEvent event) {
+    boolean eventProcessed = false;
+    if (event.getPath().equals(
+        mappingInputSplitsPaths.getAllReadyPath()) &&
+        (event.getType() == EventType.NodeCreated)) {
+      if (LOG.isInfoEnabled()) {
+        LOG.info("process: inputSplitsReadyChanged " +
+            "(input splits ready)");
+      }
+      mappingInputSplitsEvents.getAllReadyChanged().signal();
+      eventProcessed = true;
+    } else if (event.getPath().endsWith(MAPPING_INPUT_SPLIT_RESERVED_NODE) &&
+        (event.getType() == EventType.NodeCreated)) {
+      if (LOG.isDebugEnabled()) {
+        LOG.debug("process: mappingInputSplitsStateChanged " +
+            "(made a reservation)");
+      }
+      mappingInputSplitsEvents.getStateChanged().signal();
+      eventProcessed = true;
+    } else if (event.getPath().endsWith(MAPPING_INPUT_SPLIT_RESERVED_NODE) &&
+        (event.getType() == EventType.NodeDeleted)) {
+      if (LOG.isInfoEnabled()) {
+        LOG.info("process: mappingInputSplitsStateChanged " +
+            "(lost a reservation)");
+      }
+      mappingInputSplitsEvents.getStateChanged().signal();
+      eventProcessed = true;
+    } else if (event.getPath().endsWith(MAPPING_INPUT_SPLIT_FINISHED_NODE) &&
+        (event.getType() == EventType.NodeCreated)) {
+      if (LOG.isDebugEnabled()) {
+        LOG.debug("process: mappingInputSplitsStateChanged " +
+            "(finished inputsplit)");
+      }
+      mappingInputSplitsEvents.getStateChanged().signal();
+      eventProcessed = true;
+    } else if (event.getPath().endsWith(MAPPING_INPUT_SPLIT_DONE_DIR) &&
+        (event.getType() == EventType.NodeChildrenChanged)) {
+      if (LOG.isDebugEnabled()) {
+        LOG.debug("process: mappingInputSplitsDoneStateChanged " +
+            "(worker finished sending)");
+      }
+      mappingInputSplitsEvents.getDoneStateChanged().signal();
+      eventProcessed = true;
+    } else if (event.getPath().equals(
+        mappingInputSplitsPaths.getAllDonePath()) &&
+        (event.getType() == EventType.NodeCreated)) {
+      if (LOG.isInfoEnabled()) {
+        LOG.info("process: mappingInputSplitsAllDoneChanged " +
+            "(all entries sent from input splits)");
+      }
+      mappingInputSplitsEvents.getAllDoneChanged().signal();
+      eventProcessed = true;
+    }
+    return eventProcessed;
   }
-
-  @Override
-  public JobProgressTracker getJobProgressTracker() {
-    return getGraphTaskManager().getJobProgressTracker();
-  }
-
 
   /**
-   * For every worker this method returns unique number
-   * between 0 and N, where N is the total number of workers.
-   * This number stays the same throughout the computation.
-   * TaskID may be different from this number and task ID
-   * is not necessarily continuous
-   * @param workerInfo worker info object
-   * @return worker number
+   * Process WatchedEvent for Vertex Inputsplits
+   *
+   * @param event watched event
+   * @return true if event processed
    */
-  protected int getWorkerId(WorkerInfo workerInfo) {
-    return getWorkerInfoList().indexOf(workerInfo);
+  public final boolean processVertexEvent(WatchedEvent event) {
+    boolean eventProcessed = false;
+    if (event.getPath().equals(
+        vertexInputSplitsPaths.getAllReadyPath()) &&
+        (event.getType() == EventType.NodeCreated)) {
+      if (LOG.isInfoEnabled()) {
+        LOG.info("process: inputSplitsReadyChanged " +
+            "(input splits ready)");
+      }
+      vertexInputSplitsEvents.getAllReadyChanged().signal();
+      eventProcessed = true;
+    } else if (event.getPath().endsWith(VERTEX_INPUT_SPLIT_RESERVED_NODE) &&
+        (event.getType() == EventType.NodeCreated)) {
+      if (LOG.isDebugEnabled()) {
+        LOG.debug("process: vertexInputSplitsStateChanged " +
+            "(made a reservation)");
+      }
+      vertexInputSplitsEvents.getStateChanged().signal();
+      eventProcessed = true;
+    } else if (event.getPath().endsWith(VERTEX_INPUT_SPLIT_RESERVED_NODE) &&
+        (event.getType() == EventType.NodeDeleted)) {
+      if (LOG.isInfoEnabled()) {
+        LOG.info("process: vertexInputSplitsStateChanged " +
+            "(lost a reservation)");
+      }
+      vertexInputSplitsEvents.getStateChanged().signal();
+      eventProcessed = true;
+    } else if (event.getPath().endsWith(VERTEX_INPUT_SPLIT_FINISHED_NODE) &&
+        (event.getType() == EventType.NodeCreated)) {
+      if (LOG.isDebugEnabled()) {
+        LOG.debug("process: vertexInputSplitsStateChanged " +
+            "(finished inputsplit)");
+      }
+      vertexInputSplitsEvents.getStateChanged().signal();
+      eventProcessed = true;
+    } else if (event.getPath().endsWith(VERTEX_INPUT_SPLIT_DONE_DIR) &&
+        (event.getType() == EventType.NodeChildrenChanged)) {
+      if (LOG.isDebugEnabled()) {
+        LOG.debug("process: vertexInputSplitsDoneStateChanged " +
+            "(worker finished sending)");
+      }
+      vertexInputSplitsEvents.getDoneStateChanged().signal();
+      eventProcessed = true;
+    }  else if (event.getPath().equals(
+        vertexInputSplitsPaths.getAllDonePath()) &&
+        (event.getType() == EventType.NodeCreated)) {
+      if (LOG.isInfoEnabled()) {
+        LOG.info("process: vertexInputSplitsAllDoneChanged " +
+            "(all vertices sent from input splits)");
+      }
+      vertexInputSplitsEvents.getAllDoneChanged().signal();
+      eventProcessed = true;
+    }
+    return eventProcessed;
   }
 
   /**
-   * Returns worker info corresponding to specified worker id.
-   * @param id unique worker id
-   * @return WorkerInfo
+   * Process WatchedEvent for Edge Inputsplits
+   *
+   * @param event watched event
+   * @return true if event processed
    */
-  protected WorkerInfo getWorkerInfoById(int id) {
-    return getWorkerInfoList().get(id);
+  public final boolean processEdgeEvent(WatchedEvent event) {
+    boolean eventProcessed = false;
+    if (event.getPath().equals(
+        edgeInputSplitsPaths.getAllReadyPath()) &&
+        (event.getType() == EventType.NodeCreated)) {
+      if (LOG.isInfoEnabled()) {
+        LOG.info("process: edgeInputSplitsReadyChanged " +
+            "(input splits ready)");
+      }
+      edgeInputSplitsEvents.getAllReadyChanged().signal();
+      eventProcessed = true;
+    } else if (event.getPath().endsWith(EDGE_INPUT_SPLIT_RESERVED_NODE) &&
+        (event.getType() == EventType.NodeCreated)) {
+      if (LOG.isDebugEnabled()) {
+        LOG.debug("process: edgeInputSplitsStateChanged " +
+            "(made a reservation)");
+      }
+      edgeInputSplitsEvents.getStateChanged().signal();
+      eventProcessed = true;
+    } else if (event.getPath().endsWith(EDGE_INPUT_SPLIT_RESERVED_NODE) &&
+        (event.getType() == EventType.NodeDeleted)) {
+      if (LOG.isInfoEnabled()) {
+        LOG.info("process: edgeInputSplitsStateChanged " +
+            "(lost a reservation)");
+      }
+      edgeInputSplitsEvents.getStateChanged().signal();
+      eventProcessed = true;
+    } else if (event.getPath().endsWith(EDGE_INPUT_SPLIT_FINISHED_NODE) &&
+        (event.getType() == EventType.NodeCreated)) {
+      if (LOG.isDebugEnabled()) {
+        LOG.debug("process: edgeInputSplitsStateChanged " +
+            "(finished inputsplit)");
+      }
+      edgeInputSplitsEvents.getStateChanged().signal();
+      eventProcessed = true;
+    } else if (event.getPath().endsWith(EDGE_INPUT_SPLIT_DONE_DIR) &&
+        (event.getType() == EventType.NodeChildrenChanged)) {
+      if (LOG.isDebugEnabled()) {
+        LOG.debug("process: edgeInputSplitsDoneStateChanged " +
+            "(worker finished sending)");
+      }
+      edgeInputSplitsEvents.getDoneStateChanged().signal();
+      eventProcessed = true;
+    } else if (event.getPath().equals(
+        edgeInputSplitsPaths.getAllDonePath()) &&
+        (event.getType() == EventType.NodeCreated)) {
+      if (LOG.isInfoEnabled()) {
+        LOG.info("process: edgeInputSplitsAllDoneChanged " +
+            "(all edges sent from input splits)");
+      }
+      edgeInputSplitsEvents.getAllDoneChanged().signal();
+      eventProcessed = true;
+    }
+    return eventProcessed;
   }
 }

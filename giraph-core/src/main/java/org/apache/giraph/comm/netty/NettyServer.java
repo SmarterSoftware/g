@@ -23,8 +23,8 @@ import org.apache.giraph.comm.netty.handler.AuthorizeServerHandler;
 /*end[HADOOP_NON_SECURE]*/
 import org.apache.giraph.comm.netty.handler.RequestDecoder;
 import org.apache.giraph.comm.netty.handler.RequestServerHandler;
-/*if_not[HADOOP_NON_SECURE]*/
 import org.apache.giraph.comm.netty.handler.ResponseEncoder;
+/*if_not[HADOOP_NON_SECURE]*/
 import org.apache.giraph.comm.netty.handler.SaslServerHandler;
 /*end[HADOOP_NON_SECURE]*/
 import org.apache.giraph.comm.netty.handler.WorkerRequestReservedMap;
@@ -33,7 +33,6 @@ import org.apache.giraph.conf.ImmutableClassesGiraphConfiguration;
 import org.apache.giraph.graph.TaskInfo;
 import org.apache.giraph.utils.PipelineUtils;
 import org.apache.giraph.utils.ProgressableUtils;
-import org.apache.giraph.utils.ThreadUtils;
 import org.apache.hadoop.util.Progressable;
 import org.apache.log4j.Logger;
 import io.netty.bootstrap.ServerBootstrap;
@@ -49,13 +48,13 @@ import io.netty.channel.ChannelInboundHandlerAdapter;
 import io.netty.channel.ChannelFuture;
 import io.netty.channel.socket.nio.NioServerSocketChannel;
 import io.netty.handler.codec.LengthFieldBasedFrameDecoder;
-/*if_not[HADOOP_NON_SECURE]*/
 import io.netty.util.AttributeKey;
-/*end[HADOOP_NON_SECURE]*/
 import io.netty.util.concurrent.DefaultEventExecutorGroup;
 import io.netty.util.concurrent.EventExecutorGroup;
 import io.netty.util.concurrent.ImmediateEventExecutor;
 import io.netty.channel.AdaptiveRecvByteBufAllocator;
+
+import com.google.common.util.concurrent.ThreadFactoryBuilder;
 
 import java.net.InetSocketAddress;
 import java.net.UnknownHostException;
@@ -86,7 +85,7 @@ public class NettyServer {
   private final ChannelGroup accepted = new DefaultChannelGroup(
       ImmediateEventExecutor.INSTANCE);
   /** Local hostname */
-  private final String localHostOrIp;
+  private final String localHostname;
   /** Address of the server */
   private InetSocketAddress myAddress;
   /** Current task info */
@@ -123,8 +122,6 @@ public class NettyServer {
   private final EventExecutorGroup executionGroup;
   /** Name of the handler before the execution handler (if used) */
   private final String handlerToUseExecutionGroup;
-  /** Handles all uncaught exceptions in netty threads */
-  private final Thread.UncaughtExceptionHandler exceptionHandler;
 
   /**
    * Constructor for creating the server
@@ -133,20 +130,17 @@ public class NettyServer {
    * @param requestServerHandlerFactory Factory for request handlers
    * @param myTaskInfo Current task info
    * @param progressable Progressable for reporting progress
-   * @param exceptionHandler handle uncaught exceptions
    */
   public NettyServer(ImmutableClassesGiraphConfiguration conf,
       RequestServerHandler.Factory requestServerHandlerFactory,
-      TaskInfo myTaskInfo, Progressable progressable,
-      Thread.UncaughtExceptionHandler exceptionHandler) {
+      TaskInfo myTaskInfo, Progressable progressable) {
     this.conf = conf;
     this.progressable = progressable;
     this.requestServerHandlerFactory = requestServerHandlerFactory;
-/*if_not[HADOOP_NON_SECURE]*/
+    /*if_not[HADOOP_NON_SECURE]*/
     this.saslServerHandlerFactory = new SaslServerHandler.Factory();
-/*end[HADOOP_NON_SECURE]*/
+    /*end[HADOOP_NON_SECURE]*/
     this.myTaskInfo = myTaskInfo;
-    this.exceptionHandler = exceptionHandler;
     sendBufferSize = GiraphConstants.SERVER_SEND_BUFFER_SIZE.get(conf);
     receiveBufferSize = GiraphConstants.SERVER_RECEIVE_BUFFER_SIZE.get(conf);
 
@@ -155,15 +149,15 @@ public class NettyServer {
     maxPoolSize = GiraphConstants.NETTY_SERVER_THREADS.get(conf);
 
     bossGroup = new NioEventLoopGroup(4,
-        ThreadUtils.createThreadFactory(
-            "netty-server-boss-%d", exceptionHandler));
+        new ThreadFactoryBuilder().setNameFormat(
+          "netty-server-boss-%d").build());
 
     workerGroup = new NioEventLoopGroup(maxPoolSize,
-        ThreadUtils.createThreadFactory(
-            "netty-server-worker-%d", exceptionHandler));
+        new ThreadFactoryBuilder().setNameFormat(
+          "netty-server-worker-%d").build());
 
     try {
-      this.localHostOrIp = conf.getLocalHostOrIp();
+      this.localHostname = conf.getLocalHostname();
     } catch (UnknownHostException e) {
       throw new IllegalStateException("NettyServer: unable to get hostname");
     }
@@ -179,8 +173,8 @@ public class NettyServer {
     if (useExecutionGroup) {
       int executionThreads = conf.getNettyServerExecutionThreads();
       executionGroup = new DefaultEventExecutorGroup(executionThreads,
-          ThreadUtils.createThreadFactory(
-              "netty-server-exec-%d", exceptionHandler));
+          new ThreadFactoryBuilder().setNameFormat("netty-server-exec-%d").
+              build());
       if (LOG.isInfoEnabled()) {
         LOG.info("NettyServer: Using execution group with " +
             executionThreads + " threads for " +
@@ -200,16 +194,13 @@ public class NettyServer {
    * @param myTaskInfo Current task info
    * @param progressable Progressable for reporting progress
    * @param saslServerHandlerFactory  Factory for SASL handlers
-   * @param exceptionHandler handle uncaught exceptions
    */
   public NettyServer(ImmutableClassesGiraphConfiguration conf,
                      RequestServerHandler.Factory requestServerHandlerFactory,
                      TaskInfo myTaskInfo,
                      Progressable progressable,
-                     SaslServerHandler.Factory saslServerHandlerFactory,
-                     Thread.UncaughtExceptionHandler exceptionHandler) {
-    this(conf, requestServerHandlerFactory, myTaskInfo,
-        progressable, exceptionHandler);
+                     SaslServerHandler.Factory saslServerHandlerFactory) {
+    this(conf, requestServerHandlerFactory, myTaskInfo, progressable);
     this.saslServerHandlerFactory = saslServerHandlerFactory;
   }
 /*end[HADOOP_NON_SECURE]*/
@@ -249,18 +240,8 @@ public class NettyServer {
           // configuration except for the presence of the Authorize component.
           PipelineUtils.addLastWithExecutorCheck("serverInboundByteCounter",
               inByteCounter, handlerToUseExecutionGroup, executionGroup, ch);
-          if (conf.doCompression()) {
-            PipelineUtils.addLastWithExecutorCheck("compressionDecoder",
-                conf.getNettyCompressionDecoder(),
-                handlerToUseExecutionGroup, executionGroup, ch);
-          }
           PipelineUtils.addLastWithExecutorCheck("serverOutboundByteCounter",
               outByteCounter, handlerToUseExecutionGroup, executionGroup, ch);
-          if (conf.doCompression()) {
-            PipelineUtils.addLastWithExecutorCheck("compressionEncoder",
-                conf.getNettyCompressionEncoder(),
-                handlerToUseExecutionGroup, executionGroup, ch);
-          }
           PipelineUtils.addLastWithExecutorCheck("requestFrameDecoder",
               new LengthFieldBasedFrameDecoder(1024 * 1024 * 1024, 0, 4, 0, 4),
               handlerToUseExecutionGroup, executionGroup, ch);
@@ -276,8 +257,8 @@ public class NettyServer {
               executionGroup, ch);
           PipelineUtils.addLastWithExecutorCheck("requestServerHandler",
               requestServerHandlerFactory.newHandler(workerRequestReservedMap,
-                  conf, myTaskInfo, exceptionHandler),
-              handlerToUseExecutionGroup, executionGroup, ch);
+                  conf, myTaskInfo), handlerToUseExecutionGroup,
+              executionGroup, ch);
           // Removed after authentication completes:
           PipelineUtils.addLastWithExecutorCheck("responseEncoder",
               new ResponseEncoder(), handlerToUseExecutionGroup,
@@ -299,18 +280,8 @@ public class NettyServer {
               });
           PipelineUtils.addLastWithExecutorCheck("serverInboundByteCounter",
               inByteCounter, handlerToUseExecutionGroup, executionGroup, ch);
-          if (conf.doCompression()) {
-            PipelineUtils.addLastWithExecutorCheck("compressionDecoder",
-                conf.getNettyCompressionDecoder(),
-                handlerToUseExecutionGroup, executionGroup, ch);
-          }
           PipelineUtils.addLastWithExecutorCheck("serverOutboundByteCounter",
               outByteCounter, handlerToUseExecutionGroup, executionGroup, ch);
-          if (conf.doCompression()) {
-            PipelineUtils.addLastWithExecutorCheck("compressionEncoder",
-                conf.getNettyCompressionEncoder(),
-                handlerToUseExecutionGroup, executionGroup, ch);
-          }
           PipelineUtils.addLastWithExecutorCheck("requestFrameDecoder",
               new LengthFieldBasedFrameDecoder(1024 * 1024 * 1024, 0, 4, 0, 4),
               handlerToUseExecutionGroup, executionGroup, ch);
@@ -319,7 +290,7 @@ public class NettyServer {
               handlerToUseExecutionGroup, executionGroup, ch);
           PipelineUtils.addLastWithExecutorCheck("requestServerHandler",
               requestServerHandlerFactory.newHandler(
-                  workerRequestReservedMap, conf, myTaskInfo, exceptionHandler),
+                  workerRequestReservedMap, conf, myTaskInfo),
               handlerToUseExecutionGroup, executionGroup, ch);
 /*if_not[HADOOP_NON_SECURE]*/
         }
@@ -344,7 +315,7 @@ public class NettyServer {
     // Round up the max number of workers to the next power of 10 and use
     // it as a constant to increase the port number with.
     while (bindAttempts < maxIpcPortBindAttempts) {
-      this.myAddress = new InetSocketAddress(localHostOrIp, bindPort);
+      this.myAddress = new InetSocketAddress(localHostname, bindPort);
       if (failFirstPortBindingAttempt && bindAttempts == 0) {
         if (LOG.isInfoEnabled()) {
           LOG.info("start: Intentionally fail first " +
@@ -413,10 +384,5 @@ public class NettyServer {
   public InetSocketAddress getMyAddress() {
     return myAddress;
   }
-
-  public String getLocalHostOrIp() {
-    return localHostOrIp;
-  }
-
 }
 

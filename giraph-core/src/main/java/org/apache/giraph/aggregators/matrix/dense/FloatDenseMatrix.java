@@ -26,9 +26,9 @@ import java.util.ArrayList;
  */
 public class FloatDenseMatrix {
   /** The number of rows in the matrix */
-  private final int numRows;
+  private int numRows;
   /** The number of columns in the matrix */
-  private final int numColumns;
+  private int numColumns;
   /** The rows of the matrix */
   private ArrayList<FloatDenseVector> rows = null;
 
@@ -109,7 +109,7 @@ public class FloatDenseMatrix {
    * @param i the row number
    * @return the row of the matrix
    */
-  public FloatDenseVector getRow(int i) {
+  FloatDenseVector getRow(int i) {
     return rows.get(i);
   }
 
@@ -118,7 +118,7 @@ public class FloatDenseMatrix {
    *
    * @param vec the vector to add
    */
-  public void addRow(FloatDenseVector vec) {
+  void addRow(FloatDenseVector vec) {
     if (rows.size() >= numRows) {
       throw new RuntimeException("Cannot add more rows!");
     }

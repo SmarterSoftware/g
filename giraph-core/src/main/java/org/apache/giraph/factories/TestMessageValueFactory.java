@@ -17,6 +17,7 @@
  */
 package org.apache.giraph.factories;
 
+import org.apache.giraph.conf.ImmutableClassesGiraphConfiguration;
 import org.apache.giraph.utils.ReflectionUtils;
 import org.apache.hadoop.io.Writable;
 
@@ -38,6 +39,13 @@ public class TestMessageValueFactory<M extends Writable>
   public TestMessageValueFactory(Class<M> klass) {
     this.klass = klass;
   }
+
+  @Override public Class<M> getValueClass() {
+    return klass;
+  }
+
+  @Override public void initialize(
+      ImmutableClassesGiraphConfiguration conf) { }
 
   @Override public M newInstance() {
     return ReflectionUtils.newInstance(klass);

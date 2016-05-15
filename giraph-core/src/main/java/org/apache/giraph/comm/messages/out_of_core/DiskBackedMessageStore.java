@@ -18,24 +18,22 @@
 
 package org.apache.giraph.comm.messages.out_of_core;
 
-import java.io.DataInput;
-import java.io.DataOutput;
-import java.io.IOException;
-import java.util.Collections;
-import java.util.concurrent.ConcurrentMap;
+import com.google.common.collect.Maps;
 
 import org.apache.giraph.bsp.CentralizedServiceWorker;
 import org.apache.giraph.comm.messages.MessageStore;
 import org.apache.giraph.comm.messages.MessageStoreFactory;
-import org.apache.giraph.conf.MessageClasses;
+import org.apache.giraph.factories.MessageValueFactory;
 import org.apache.giraph.utils.EmptyIterable;
 import org.apache.giraph.utils.VertexIdMessageIterator;
 import org.apache.giraph.utils.VertexIdMessages;
 import org.apache.hadoop.io.Writable;
 import org.apache.hadoop.io.WritableComparable;
-
-import com.google.common.collect.Iterables;
-import com.google.common.collect.Maps;
+import java.io.DataInput;
+import java.io.DataOutput;
+import java.io.IOException;
+import java.util.Collections;
+import java.util.concurrent.ConcurrentMap;
 
 /**
  * Message store which separates data by partitions,
@@ -50,7 +48,7 @@ public class DiskBackedMessageStore<I extends WritableComparable,
     V extends Writable, E extends Writable, M extends Writable> implements
     MessageStore<I, M> {
   /** Message value factory */
-  private final MessageClasses<I, M> messageClasses;
+  private final MessageValueFactory<M> messageValueFactory;
   /** Service worker */
   private final CentralizedServiceWorker<I, V, E> service;
   /** Number of messages to keep in memory */
@@ -65,19 +63,19 @@ public class DiskBackedMessageStore<I extends WritableComparable,
   /**
    * Constructor
    *
-   * @param messageClasses              Message classes information
+   * @param messageValueFactory         Factory for creating message values
    * @param service                     Service worker
    * @param maxNumberOfMessagesInMemory Number of messages to keep in memory
    * @param partitionStoreFactory       Factory for creating stores for a
    *                                    partition
    */
   public DiskBackedMessageStore(
-      MessageClasses<I, M> messageClasses,
+      MessageValueFactory<M> messageValueFactory,
       CentralizedServiceWorker<I, V, E> service,
       int maxNumberOfMessagesInMemory,
       MessageStoreFactory<I, M, PartitionDiskBackedMessageStore<I,
           M>> partitionStoreFactory) {
-    this.messageClasses = messageClasses;
+    this.messageValueFactory = messageValueFactory;
     this.service = service;
     this.maxNumberOfMessagesInMemory = maxNumberOfMessagesInMemory;
     this.partitionStoreFactory = partitionStoreFactory;
@@ -85,8 +83,14 @@ public class DiskBackedMessageStore<I extends WritableComparable,
   }
 
   @Override
-  public boolean isPointerListEncoding() {
-    return false;
+  public void addPartitionMessage(
+      int partitionId, I destVertexId, M message) throws IOException {
+    PartitionDiskBackedMessageStore<I, M> partitionMessageStore =
+        getMessageStore(partitionId);
+    // TODO-YH: always clone destVertexId
+    partitionMessageStore.addVertexMessages(destVertexId,
+                                            Collections.singleton(message));
+    checkMemory();
   }
 
   @Override
@@ -113,13 +117,21 @@ public class DiskBackedMessageStore<I extends WritableComparable,
   }
 
   @Override
-  public void finalizeStore() {
+  public Iterable<M> getVertexMessages(I vertexId) throws IOException {
+    // TODO-YH: proper synchronization for async not implemented..
+    // everything is missing sync; some may need to be implemented in
+    // PartitionDiskBackedMessageStore, etc.
+    if (hasMessagesForVertex(vertexId)) {
+      return getMessageStore(vertexId).getVertexMessages(vertexId);
+    } else {
+      return EmptyIterable.get();
+    }
   }
 
   @Override
-  public Iterable<M> getVertexMessages(I vertexId) throws IOException {
+  public Iterable<M> removeVertexMessages(I vertexId) throws IOException {
     if (hasMessagesForVertex(vertexId)) {
-      return getMessageStore(vertexId).getVertexMessages(vertexId);
+      return getMessageStore(vertexId).removeVertexMessages(vertexId);
     } else {
       return EmptyIterable.get();
     }
@@ -132,10 +144,20 @@ public class DiskBackedMessageStore<I extends WritableComparable,
 
   @Override
   public boolean hasMessagesForPartition(int partitionId) {
-    PartitionDiskBackedMessageStore<I, M> partitionMessages =
-        getMessageStore(partitionId);
-    return partitionMessages != null && !Iterables
-        .isEmpty(partitionMessages.getDestinationVertices());
+    PartitionDiskBackedMessageStore<I, M> msgStore =
+      partitionMessageStores.get(partitionId);
+    return msgStore != null && msgStore.hasMessages();
+  }
+
+  @Override
+  public boolean hasMessages() {
+    for (PartitionDiskBackedMessageStore<I, M> msgStore :
+           partitionMessageStores.values()) {
+      if (msgStore.hasMessages()) {
+        return true;
+      }
+    }
+    return false;
   }
 
   @Override
@@ -143,7 +165,7 @@ public class DiskBackedMessageStore<I extends WritableComparable,
     PartitionDiskBackedMessageStore<I, M> messageStore =
         partitionMessageStores.get(partitionId);
     if (messageStore == null) {
-      return Collections.emptyList();
+      return EmptyIterable.get();
     } else {
       return messageStore.getDestinationVertices();
     }
@@ -248,7 +270,7 @@ public class DiskBackedMessageStore<I extends WritableComparable,
     if (messageStore != null) {
       return messageStore;
     }
-    messageStore = partitionStoreFactory.newStore(messageClasses);
+    messageStore = partitionStoreFactory.newStore(messageValueFactory);
     PartitionDiskBackedMessageStore<I, M> store =
         partitionMessageStores.putIfAbsent(partitionId, messageStore);
     return (store == null) ? messageStore : store;
@@ -270,7 +292,7 @@ public class DiskBackedMessageStore<I extends WritableComparable,
       int partitionId) throws IOException {
     if (in.readBoolean()) {
       PartitionDiskBackedMessageStore<I, M> messageStore =
-          partitionStoreFactory.newStore(messageClasses);
+          partitionStoreFactory.newStore(messageValueFactory);
       messageStore.readFields(in);
       partitionMessageStores.put(partitionId, messageStore);
     }

@@ -20,17 +20,11 @@ package org.apache.giraph.partition;
 
 import com.google.common.collect.Maps;
 import org.apache.giraph.conf.ImmutableClassesGiraphConfiguration;
-import org.apache.giraph.utils.ExtendedDataOutput;
-import org.apache.giraph.utils.VertexIterator;
 import org.apache.hadoop.io.Writable;
 import org.apache.hadoop.io.WritableComparable;
 import org.apache.hadoop.mapreduce.Mapper;
 
-import java.util.concurrent.ArrayBlockingQueue;
-import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.ConcurrentMap;
-
-import static com.google.common.base.Preconditions.checkState;
 
 /**
  * A simple in-memory partition store.
@@ -41,36 +35,63 @@ import static com.google.common.base.Preconditions.checkState;
  */
 public class SimplePartitionStore<I extends WritableComparable,
     V extends Writable, E extends Writable>
-    implements PartitionStore<I, V, E> {
-  /** Configuration */
-  private final ImmutableClassesGiraphConfiguration<I, V, E> conf;
-  /** Job context (for progress) */
-  private final Mapper<?, ?, ?, ?>.Context context;
+    extends PartitionStore<I, V, E> {
   /** Map of stored partitions. */
   private final ConcurrentMap<Integer, Partition<I, V, E>> partitions =
       Maps.newConcurrentMap();
-  /** Queue of partitions to be precessed in a superstep */
-  private BlockingQueue<Partition<I, V, E>> partitionQueue;
+  /** Configuration. */
+  private final ImmutableClassesGiraphConfiguration<I, V, E> conf;
+  /** Context used to report progress */
+  private final Mapper<?, ?, ?, ?>.Context context;
 
   /**
    * Constructor.
+   *
    * @param conf Configuration
    * @param context Mapper context
    */
-  public SimplePartitionStore(ImmutableClassesGiraphConfiguration<I, V, E> conf,
+  public SimplePartitionStore(
+      ImmutableClassesGiraphConfiguration<I, V, E> conf,
       Mapper<?, ?, ?, ?>.Context context) {
     this.conf = conf;
     this.context = context;
   }
 
   @Override
-  public boolean addPartition(Partition<I, V, E> partition) {
-    return partitions.putIfAbsent(partition.getId(), partition) == null;
+  public void addPartition(Partition<I, V, E> partition) {
+    Partition<I, V, E> oldPartition = partitions.get(partition.getId());
+    if (oldPartition == null) {
+      oldPartition = partitions.putIfAbsent(partition.getId(), partition);
+      if (oldPartition == null) {
+        return;
+      }
+    }
+    // This is thread-safe
+    oldPartition.addPartition(partition);
+  }
+
+  @Override
+  public Partition<I, V, E> getOrCreatePartition(Integer partitionId) {
+    Partition<I, V, E> oldPartition = partitions.get(partitionId);
+    if (oldPartition == null) {
+      Partition<I, V, E> newPartition =
+          conf.createPartition(partitionId, context);
+      oldPartition = partitions.putIfAbsent(partitionId, newPartition);
+      if (oldPartition == null) {
+        return newPartition;
+      }
+    }
+    return oldPartition;
   }
 
   @Override
   public Partition<I, V, E> removePartition(Integer partitionId) {
     return partitions.remove(partitionId);
+  }
+
+  @Override
+  public void deletePartition(Integer partitionId) {
+    partitions.remove(partitionId);
   }
 
   @Override
@@ -89,84 +110,5 @@ public class SimplePartitionStore<I extends WritableComparable,
   }
 
   @Override
-  public long getPartitionVertexCount(Integer partitionId) {
-    Partition partition = partitions.get(partitionId);
-    if (partition == null) {
-      return 0;
-    } else {
-      return partition.getVertexCount();
-    }
-  }
-
-  @Override
-  public long getPartitionEdgeCount(Integer partitionId) {
-    Partition partition = partitions.get(partitionId);
-    if (partition == null) {
-      return 0;
-    } else {
-      return partition.getEdgeCount();
-    }
-  }
-
-  @Override
-  public boolean isEmpty() {
-    return partitions.size() == 0;
-  }
-
-  @Override
-  public void startIteration() {
-    checkState(partitionQueue == null || partitionQueue.isEmpty(),
-        "startIteration: It seems that some of " +
-          "of the partitions from previous iteration over partition store are" +
-          " not yet processed.");
-
-    partitionQueue =
-        new ArrayBlockingQueue<Partition<I, V, E>>(getNumPartitions());
-    for (Partition<I, V, E> partition : partitions.values()) {
-      partitionQueue.add(partition);
-    }
-  }
-
-  @Override
-  public Partition<I, V, E> getNextPartition() {
-    return partitionQueue.poll();
-  }
-
-  @Override
   public void putPartition(Partition<I, V, E> partition) { }
-
-  /**
-   * Get or create a partition.
-   * @param partitionId Partition Id
-   * @return The requested partition (never null)
-   */
-  private Partition<I, V, E> getOrCreatePartition(Integer partitionId) {
-    Partition<I, V, E> oldPartition = partitions.get(partitionId);
-    if (oldPartition == null) {
-      Partition<I, V, E> newPartition =
-          conf.createPartition(partitionId, context);
-      oldPartition = partitions.putIfAbsent(partitionId, newPartition);
-      if (oldPartition == null) {
-        return newPartition;
-      }
-    }
-    return oldPartition;
-  }
-
-  @Override
-  public void addPartitionVertices(Integer partitionId,
-      ExtendedDataOutput extendedDataOutput) {
-    VertexIterator<I, V, E> vertexIterator =
-        new VertexIterator<I, V, E>(extendedDataOutput, conf);
-
-    Partition<I, V, E> partition = getOrCreatePartition(partitionId);
-    partition.addPartitionVertices(vertexIterator);
-    putPartition(partition);
-  }
-
-  @Override
-  public void shutdown() { }
-
-  @Override
-  public void initialize() { }
 }

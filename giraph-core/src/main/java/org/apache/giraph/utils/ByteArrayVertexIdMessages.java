@@ -18,13 +18,13 @@
 
 package org.apache.giraph.utils;
 
-import java.io.DataInput;
-import java.io.DataOutput;
-import java.io.IOException;
-
 import org.apache.giraph.factories.MessageValueFactory;
 import org.apache.hadoop.io.Writable;
 import org.apache.hadoop.io.WritableComparable;
+
+import java.io.DataInput;
+import java.io.DataOutput;
+import java.io.IOException;
 
 /**
  * Stores vertex id and message pairs in a single byte array.
@@ -37,7 +37,7 @@ public class ByteArrayVertexIdMessages<I extends WritableComparable,
   M extends Writable> extends ByteArrayVertexIdData<I, M>
   implements VertexIdMessages<I, M> {
   /** Message value class */
-  private final MessageValueFactory<M> messageValueFactory;
+  private MessageValueFactory<M> messageValueFactory;
   /** Add the message size to the stream? (Depends on the message store) */
   private boolean useMessageSizeEncoding = false;
 
@@ -57,7 +57,7 @@ public class ByteArrayVertexIdMessages<I extends WritableComparable,
    * de-serialized right away, so this won't help.
    */
   private void setUseMessageSizeEncoding() {
-    if (!getConf().useOutgoingMessageCombiner()) {
+    if (!getConf().useMessageCombiner()) {
       useMessageSizeEncoding = getConf().useMessageSizeEncoding();
     } else {
       useMessageSizeEncoding = false;
@@ -94,47 +94,6 @@ public class ByteArrayVertexIdMessages<I extends WritableComparable,
   @Override
   public ByteStructVertexIdMessageIterator<I, M> getVertexIdMessageIterator() {
     return new ByteStructVertexIdMessageIterator<>(this);
-  }
-
-  @Override
-  public void add(I vertexId, M message) {
-    if (!useMessageSizeEncoding) {
-      super.add(vertexId, message);
-    } else {
-      try {
-        vertexId.write(extendedDataOutput);
-        writeMessageWithSize(message);
-      } catch (IOException e) {
-        throw new IllegalStateException("add: IOException occurred");
-      }
-    }
-  }
-
-  @Override
-  public void add(byte[] serializedId, int idPos, M message) {
-    if (!useMessageSizeEncoding) {
-      super.add(serializedId, idPos, message);
-    } else {
-      try {
-        extendedDataOutput.write(serializedId, 0, idPos);
-        writeMessageWithSize(message);
-      } catch (IOException e) {
-        throw new IllegalStateException("add: IOException occurred");
-      }
-    }
-  }
-
-  /**
-   * Write a size of the message and message
-   *
-   * @param message Message to write
-   */
-  private void writeMessageWithSize(M message) throws IOException {
-    int pos = extendedDataOutput.getPos();
-    extendedDataOutput.skipBytes(4);
-    writeData(extendedDataOutput, message);
-    extendedDataOutput.writeInt(
-        pos, extendedDataOutput.getPos() - pos - 4);
   }
 
   @Override

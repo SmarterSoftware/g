@@ -18,10 +18,10 @@
 
 package org.apache.giraph.comm;
 
-import java.io.IOException;
-
-import org.apache.giraph.comm.requests.WritableRequest;
+import org.apache.giraph.aggregators.Aggregator;
 import org.apache.hadoop.io.Writable;
+
+import java.io.IOException;
 
 /**
  * Interface for master to send messages to workers
@@ -35,32 +35,25 @@ public interface MasterClient {
   /**
    * Sends aggregator to its owner
    *
-   * @param name Name of the object
-   * @param type Global communication type
-   * @param value Object value
+   * @param aggregatorName Name of the aggregator
+   * @param aggregatorClass Class of the aggregator
+   * @param aggregatedValue Value of the aggregator
    * @throws IOException
    */
-  void sendToOwner(String name, GlobalCommType type, Writable value)
-    throws IOException;
+  void sendAggregator(String aggregatorName,
+      Class<? extends Aggregator> aggregatorClass,
+      Writable aggregatedValue) throws IOException;
 
   /**
    * Flush aggregated values cache.
    */
-  void finishSendingValues() throws IOException;
+  void finishSendingAggregatedValues() throws IOException;
 
   /**
    * Flush all outgoing messages.  This will synchronously ensure that all
    * messages have been send and delivered prior to returning.
    */
   void flush();
-
-  /**
-   * Send a request to a remote server (should be already connected)
-   *
-   * @param destTaskId Destination worker id
-   * @param request Request to send
-   */
-  void sendWritableRequest(int destTaskId, WritableRequest request);
 
   /**
    * Closes all connections.

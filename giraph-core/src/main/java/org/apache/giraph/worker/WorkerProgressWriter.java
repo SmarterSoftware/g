@@ -18,7 +18,7 @@
 
 package org.apache.giraph.worker;
 
-import org.apache.giraph.job.JobProgressTracker;
+import org.apache.giraph.zk.ZooKeeperExt;
 import org.apache.log4j.Logger;
 
 /**
@@ -31,27 +31,33 @@ public class WorkerProgressWriter {
   /** How often to update worker's progress */
   private static final int WRITE_UPDATE_PERIOD_MILLISECONDS = 10 * 1000;
 
-  /** Job progress tracker */
-  private final JobProgressTracker jobProgressTracker;
   /** Thread which writes worker's progress */
   private final Thread writerThread;
   /** Whether worker finished application */
   private volatile boolean finished = false;
+  /** Path where this worker's progress should be stored */
+  private final String myProgressPath;
+  /** ZooKeeperExt */
+  private final ZooKeeperExt zk;
 
   /**
    * Constructor, starts separate thread to periodically update worker's
    * progress
    *
-   * @param jobProgressTracker JobProgressTracker to report job progress to
+   * @param myProgressPath Path where this worker's progress should be stored
+   * @param zk ZooKeeperExt
    */
-  public WorkerProgressWriter(JobProgressTracker jobProgressTracker) {
-    this.jobProgressTracker = jobProgressTracker;
+  public WorkerProgressWriter(String myProgressPath, ZooKeeperExt zk) {
+    this.myProgressPath = myProgressPath;
+    this.zk = zk;
     writerThread = new Thread(new Runnable() {
       @Override
       public void run() {
         try {
           while (!finished) {
-            updateAndSendProgress();
+            WorkerProgress.get().updateMemory();
+            WorkerProgress.writeToZnode(WorkerProgressWriter.this.zk,
+                WorkerProgressWriter.this.myProgressPath);
             double factor = 1 + Math.random();
             Thread.sleep((long) (WRITE_UPDATE_PERIOD_MILLISECONDS * factor));
           }
@@ -62,17 +68,8 @@ public class WorkerProgressWriter {
           }
         }
       }
-    }, "workerProgressThread");
-    writerThread.setDaemon(true);
+    });
     writerThread.start();
-  }
-
-  /**
-   * Update worker progress and send it
-   */
-  private void updateAndSendProgress() {
-    WorkerProgress.get().updateMemory();
-    jobProgressTracker.updateProgress(WorkerProgress.get());
   }
 
   /**
@@ -82,6 +79,6 @@ public class WorkerProgressWriter {
     finished = true;
     writerThread.interrupt();
     writerThread.join();
-    updateAndSendProgress();
+    WorkerProgress.writeToZnode(zk, myProgressPath);
   }
 }

@@ -18,10 +18,6 @@
 
 package org.apache.giraph.job;
 
-import static org.apache.giraph.conf.GiraphConstants.VERTEX_EDGES_CLASS;
-import static org.apache.giraph.conf.GiraphConstants.VERTEX_RESOLVER_CLASS;
-import static org.apache.giraph.utils.ReflectionUtils.getTypeArguments;
-
 import org.apache.giraph.combiner.MessageCombiner;
 import org.apache.giraph.conf.GiraphConstants;
 import org.apache.giraph.conf.ImmutableClassesGiraphConfiguration;
@@ -29,8 +25,8 @@ import org.apache.giraph.edge.OutEdges;
 import org.apache.giraph.factories.DefaultVertexValueFactory;
 import org.apache.giraph.factories.VertexValueFactory;
 import org.apache.giraph.graph.DefaultVertexResolver;
-import org.apache.giraph.graph.VertexResolver;
 import org.apache.giraph.graph.VertexValueCombiner;
+import org.apache.giraph.graph.VertexResolver;
 import org.apache.giraph.io.EdgeInputFormat;
 import org.apache.giraph.io.EdgeOutputFormat;
 import org.apache.giraph.io.VertexInputFormat;
@@ -39,6 +35,10 @@ import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.io.Writable;
 import org.apache.hadoop.io.WritableComparable;
 import org.apache.log4j.Logger;
+
+import static org.apache.giraph.conf.GiraphConstants.VERTEX_EDGES_CLASS;
+import static org.apache.giraph.conf.GiraphConstants.VERTEX_RESOLVER_CLASS;
+import static org.apache.giraph.utils.ReflectionUtils.getTypeArguments;
 
 /**
  * GiraphConfigurationValidator attempts to verify the consistency of
@@ -81,7 +81,7 @@ public class GiraphConfigurationValidator<I extends WritableComparable,
   /**
    * The Configuration object for use in the validation test.
    */
-  private final ImmutableClassesGiraphConfiguration conf;
+  private ImmutableClassesGiraphConfiguration conf;
 
   /**
    * Constructor to execute the validation test, throws
@@ -126,7 +126,7 @@ public class GiraphConfigurationValidator<I extends WritableComparable,
    * @return outgoing message value type
    */
   private Class<? extends Writable> outgoingMessageValueType() {
-    return conf.getOutgoingMessageValueClass();
+    return conf.getGiraphTypes().getOutgoingMessageValueClass();
   }
 
   /**
@@ -266,11 +266,11 @@ public class GiraphConfigurationValidator<I extends WritableComparable,
    * generic params match the job.
    */
   private void verifyMessageCombinerGenericTypes() {
-    MessageCombiner<I, M2> messageCombiner =
-      conf.createOutgoingMessageCombiner();
-    if (messageCombiner != null) {
+    Class<? extends MessageCombiner<I, M2>> messageCombinerClass =
+      conf.getMessageCombinerClass();
+    if (messageCombinerClass != null) {
       Class<?>[] classList =
-          getTypeArguments(MessageCombiner.class, messageCombiner.getClass());
+          getTypeArguments(MessageCombiner.class, messageCombinerClass);
       checkEquals(classList, ID_PARAM_INDEX, vertexIndexType(),
           MessageCombiner.class, "vertex index");
       checkEquals(classList, MSG_COMBINER_PARAM_INDEX,
@@ -356,7 +356,7 @@ public class GiraphConfigurationValidator<I extends WritableComparable,
     if (classList[index] == null) {
       LOG.warn(klass.getSimpleName() + " " + typeName + " type is not known");
     } else if (!classList[index].equals(classFromComputation)) {
-      throw new IllegalStateException(
+      throw new IllegalArgumentException(
           "checkClassTypes: " + typeName + " types not equal, " +
               "computation - " + classFromComputation +
               ", " + klass.getSimpleName() + " - " +
@@ -378,7 +378,7 @@ public class GiraphConfigurationValidator<I extends WritableComparable,
     if (classList[index] == null) {
       LOG.warn(klass.getSimpleName() + " " + typeName + " type is not known");
     } else if (!classList[index].isAssignableFrom(classFromComputation)) {
-      throw new IllegalStateException(
+      throw new IllegalArgumentException(
           "checkClassTypes: " + typeName + " types not assignable, " +
               "computation - " + classFromComputation +
               ", " + klass.getSimpleName() + " - " +

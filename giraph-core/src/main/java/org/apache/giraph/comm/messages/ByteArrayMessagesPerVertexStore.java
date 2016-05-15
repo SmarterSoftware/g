@@ -25,17 +25,17 @@ import java.util.concurrent.ConcurrentMap;
 
 import org.apache.giraph.bsp.CentralizedServiceWorker;
 import org.apache.giraph.conf.ImmutableClassesGiraphConfiguration;
-import org.apache.giraph.conf.MessageClasses;
 import org.apache.giraph.factories.MessageValueFactory;
-import org.apache.giraph.utils.RepresentativeByteStructIterator;
-import org.apache.giraph.utils.VerboseByteStructMessageWrite;
 import org.apache.giraph.utils.VertexIdIterator;
 import org.apache.giraph.utils.VertexIdMessageBytesIterator;
 import org.apache.giraph.utils.VertexIdMessageIterator;
 import org.apache.giraph.utils.VertexIdMessages;
+import org.apache.giraph.utils.RepresentativeByteStructIterator;
+import org.apache.giraph.utils.VerboseByteStructMessageWrite;
 import org.apache.giraph.utils.io.DataInputOutput;
 import org.apache.hadoop.io.Writable;
 import org.apache.hadoop.io.WritableComparable;
+import org.apache.hadoop.io.WritableUtils;
 
 import com.google.common.collect.Iterators;
 
@@ -63,18 +63,13 @@ public class ByteArrayMessagesPerVertexStore<I extends WritableComparable,
     super(messageValueFactory, service, config);
   }
 
-  @Override
-  public boolean isPointerListEncoding() {
-    return false;
-  }
-
   /**
    * Get the extended data output for a vertex id from the iterator, creating
    * if necessary.  This method will take ownership of the vertex id from the
    * iterator if necessary (if used in the partition map entry).
    *
    * @param partitionMap Partition map to look in
-   * @param iterator Special iterator that can release ownerhips of vertex ids
+   * @param iterator Special iterator that can release ownerships of vertex ids
    * @return Extended data output for this vertex id (created if necessary)
    */
   private DataInputOutput getDataInputOutput(
@@ -93,12 +88,59 @@ public class ByteArrayMessagesPerVertexStore<I extends WritableComparable,
     return dataInputOutput;
   }
 
+  /**
+   * Get the extended data output for a vertex id. Similar to the iterator
+   * version, with no need to worry about ownership.
+   *
+   * @param partitionMap Partition map to look in
+   * @param vertexId The vertex id of interest
+   * @param cloneVertexId True if vertexId must be cloned/copied before storage
+   * @return Extended data output for this vertex id (created if necessary)
+   */
+  private DataInputOutput getDataInputOutput(
+      ConcurrentMap<I, DataInputOutput> partitionMap,
+      I vertexId, boolean cloneVertexId) {
+    DataInputOutput dataInputOutput = partitionMap.get(vertexId);
+    if (dataInputOutput == null) {
+      DataInputOutput newDataOutput = config.createMessagesInputOutput();
+
+      // YH: if needed, clone the vertex id. This is needed when the
+      // original object is user-accessible and/or can be invalidated on
+      // some iterator's next() call up the call chain.
+      I safeVertexId = cloneVertexId ?
+        WritableUtils.clone(vertexId, config) : vertexId;
+
+      dataInputOutput = partitionMap.putIfAbsent(safeVertexId, newDataOutput);
+      if (dataInputOutput == null) {
+        dataInputOutput = newDataOutput;
+      }
+    }
+    return dataInputOutput;
+  }
+
   @Override
-  public void addPartitionMessages(
-    int partitionId, VertexIdMessages<I, M> messages) throws IOException {
+  public void addPartitionMessage(
+      int partitionId, I destVertexId, M message) throws IOException {
     ConcurrentMap<I, DataInputOutput> partitionMap =
         getOrCreatePartitionMap(partitionId);
-    VertexIdMessageBytesIterator<I, M> vertexIdMessageBytesIterator =
+    DataInputOutput dataInputOutput =
+      getDataInputOutput(partitionMap, destVertexId, true);
+
+    // YH: as per utils.ByteArrayVertexIdMessages...
+    // a little messy to decouple serialization like this
+    synchronized (dataInputOutput) {
+      message.write(dataInputOutput.getDataOutput());
+    }
+  }
+
+  @Override
+  public void addPartitionMessages(
+      int partitionId,
+      VertexIdMessages<I, M> messages) throws IOException {
+    ConcurrentMap<I, DataInputOutput> partitionMap =
+        getOrCreatePartitionMap(partitionId);
+    VertexIdMessageBytesIterator<I, M>
+        vertexIdMessageBytesIterator =
         messages.getVertexIdMessageBytesIterator();
     // Try to copy the message buffer over rather than
     // doing a deserialization of a message just to know its size.  This
@@ -117,8 +159,8 @@ public class ByteArrayMessagesPerVertexStore<I extends WritableComparable,
         }
       }
     } else {
-      VertexIdMessageIterator<I, M> vertexIdMessageIterator =
-          messages.getVertexIdMessageIterator();
+      VertexIdMessageIterator<I, M>
+          vertexIdMessageIterator = messages.getVertexIdMessageIterator();
       while (vertexIdMessageIterator.hasNext()) {
         vertexIdMessageIterator.next();
         DataInputOutput dataInputOutput =
@@ -135,7 +177,13 @@ public class ByteArrayMessagesPerVertexStore<I extends WritableComparable,
   @Override
   protected Iterable<M> getMessagesAsIterable(
       DataInputOutput dataInputOutput) {
-    return new MessagesIterable<M>(dataInputOutput, messageValueFactory);
+    // YH: have to synchronize even if this is a remove, b/c another thread
+    // may be in process of writing to this dataInputOutput
+    //
+    // TODO-YH: still bit buggy? do we need MessagesIterableSynchronized?..
+    synchronized (dataInputOutput) {
+      return new MessagesIterable<M>(dataInputOutput, messageValueFactory);
+    }
   }
 
   @Override
@@ -143,14 +191,16 @@ public class ByteArrayMessagesPerVertexStore<I extends WritableComparable,
       ConcurrentMap<I, DataInputOutput> partitionMap) {
     int numberOfMessages = 0;
     for (DataInputOutput dataInputOutput : partitionMap.values()) {
-      numberOfMessages += Iterators.size(
-          new RepresentativeByteStructIterator<M>(
-              dataInputOutput.createDataInput()) {
-            @Override
-            protected M createWritable() {
-              return messageValueFactory.newInstance();
-            }
-          });
+      synchronized (dataInputOutput) {
+        numberOfMessages += Iterators.size(
+            new RepresentativeByteStructIterator<M>(
+                dataInputOutput.createDataInput()) {
+              @Override
+              protected M createWritable() {
+                return messageValueFactory.newInstance();
+              }
+            });
+      }
     }
     return numberOfMessages;
   }
@@ -158,12 +208,14 @@ public class ByteArrayMessagesPerVertexStore<I extends WritableComparable,
   @Override
   protected void writeMessages(DataInputOutput dataInputOutput,
       DataOutput out) throws IOException {
+    // YH: used by single thread
     dataInputOutput.write(out);
   }
 
   @Override
   protected DataInputOutput readFieldsForMessages(DataInput in) throws
       IOException {
+    // YH: used by single thread
     DataInputOutput dataInputOutput = config.createMessagesInputOutput();
     dataInputOutput.readFields(in);
     return dataInputOutput;
@@ -191,15 +243,12 @@ public class ByteArrayMessagesPerVertexStore<I extends WritableComparable,
    * @param <I> Vertex id
    * @param <M> Message data
    */
-  public static class Factory<I extends WritableComparable, M extends Writable>
-    implements MessageStoreFactory<I, M, MessageStore<I, M>> {
+  private static class Factory<I extends WritableComparable, M extends Writable>
+      implements MessageStoreFactory<I, M, MessageStore<I, M>> {
     /** Service worker */
     private CentralizedServiceWorker<I, ?, ?> service;
     /** Hadoop configuration */
     private ImmutableClassesGiraphConfiguration<I, ?, ?> config;
-
-    /** Constructor for reflection */
-    public Factory() { }
 
     /**
      * @param service Worker service
@@ -213,9 +262,8 @@ public class ByteArrayMessagesPerVertexStore<I extends WritableComparable,
 
     @Override
     public MessageStore<I, M> newStore(
-        MessageClasses<I, M> messageClasses) {
-      return new ByteArrayMessagesPerVertexStore<I, M>(
-          messageClasses.createMessageValueFactory(config),
+        MessageValueFactory<M> messageValueFactory) {
+      return new ByteArrayMessagesPerVertexStore<I, M>(messageValueFactory,
           service, config);
     }
 

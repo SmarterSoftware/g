@@ -28,7 +28,7 @@ import java.io.UTFDataFormatException;
 public abstract class UnsafeReads implements ExtendedDataInput {
 
   /** Buffer length */
-  protected int bufLength;
+  protected final int bufLength;
   /** Position in the buffer */
   protected long pos = 0;
 

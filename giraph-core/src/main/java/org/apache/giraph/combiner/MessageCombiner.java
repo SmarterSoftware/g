@@ -29,7 +29,7 @@ import org.apache.hadoop.io.WritableComparable;
  * @param <I> Vertex id
  * @param <M> Message data
  */
-public interface MessageCombiner<I extends WritableComparable,
+public abstract class MessageCombiner<I extends WritableComparable,
     M extends Writable> {
   /**
    * Combine messageToCombine with originalMessage, by modifying
@@ -44,7 +44,7 @@ public interface MessageCombiner<I extends WritableComparable,
    *                         (object may be reused - do not reference it or its
    *                         member objects)
    */
-  void combine(I vertexIndex, M originalMessage,
+  public abstract void combine(I vertexIndex, M originalMessage,
       M messageToCombine);
 
   /**
@@ -53,5 +53,5 @@ public interface MessageCombiner<I extends WritableComparable,
    *
    * @return Initial message
    */
-  M createInitialMessage();
+  public abstract M createInitialMessage();
 }

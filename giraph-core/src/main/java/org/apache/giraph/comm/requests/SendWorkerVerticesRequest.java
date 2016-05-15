@@ -22,11 +22,13 @@ import org.apache.giraph.comm.ServerData;
 import org.apache.giraph.conf.ImmutableClassesGiraphConfiguration;
 import org.apache.giraph.utils.ExtendedDataOutput;
 import org.apache.giraph.utils.PairList;
+import org.apache.giraph.utils.VertexIterator;
 import org.apache.giraph.utils.WritableUtils;
 import org.apache.hadoop.io.Writable;
 import org.apache.hadoop.io.WritableComparable;
+import org.apache.giraph.partition.PartitionStore;
+import org.apache.giraph.partition.Partition;
 import org.apache.log4j.Logger;
-
 import java.io.DataInput;
 import java.io.DataOutput;
 import java.io.IOException;
@@ -103,10 +105,21 @@ public class SendWorkerVerticesRequest<I extends WritableComparable,
         iterator = workerPartitions.getIterator();
     while (iterator.hasNext()) {
       iterator.next();
-      serverData.getPartitionStore()
-          .addPartitionVertices(iterator.getCurrentFirst(),
-              iterator.getCurrentSecond());
+      VertexIterator<I, V, E> vertexIterator =
+          new VertexIterator<I, V, E>(
+          iterator.getCurrentSecond(), getConf());
+
+      Partition<I, V, E> partition;
+      PartitionStore store = serverData.getPartitionStore();
+      partition = store.getOrCreatePartition(iterator.getCurrentFirst());
+      partition.addPartitionVertices(vertexIterator);
+      store.putPartition(partition);
     }
+  }
+
+  @Override
+  public void doLocalRequest(ServerData<I, V, E> serverData) {
+    doRequest(serverData);  // YH: dummy wrapper
   }
 
   @Override

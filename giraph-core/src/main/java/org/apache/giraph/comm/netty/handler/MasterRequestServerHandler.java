@@ -18,16 +18,16 @@
 
 package org.apache.giraph.comm.netty.handler;
 
-import org.apache.giraph.comm.requests.MasterRequest;
 import org.apache.giraph.conf.ImmutableClassesGiraphConfiguration;
+import org.apache.giraph.comm.requests.MasterRequest;
+import org.apache.giraph.master.MasterAggregatorHandler;
 import org.apache.giraph.graph.TaskInfo;
-import org.apache.giraph.master.MasterGlobalCommHandler;
 
 /** Handler for requests on master */
 public class MasterRequestServerHandler extends
     RequestServerHandler<MasterRequest> {
   /** Aggregator handler */
-  private final MasterGlobalCommHandler commHandler;
+  private final MasterAggregatorHandler aggregatorHandler;
 
   /**
    * Constructor
@@ -35,32 +35,20 @@ public class MasterRequestServerHandler extends
    * @param workerRequestReservedMap Worker request reservation map
    * @param conf                     Configuration
    * @param myTaskInfo               Current task info
-   * @param commHandler              Master communication handler
-   * @param exceptionHandler         Handles uncaught exceptions
+   * @param aggregatorHandler        Master aggregator handler
    */
   public MasterRequestServerHandler(
       WorkerRequestReservedMap workerRequestReservedMap,
       ImmutableClassesGiraphConfiguration conf,
       TaskInfo myTaskInfo,
-      MasterGlobalCommHandler commHandler,
-      Thread.UncaughtExceptionHandler exceptionHandler) {
-    super(workerRequestReservedMap, conf, myTaskInfo, exceptionHandler);
-    this.commHandler = commHandler;
-  }
-
-  @Override
-  protected short getCurrentMaxCredit() {
-    return 0;
-  }
-
-  @Override
-  protected boolean shouldIgnoreCredit(int taskId) {
-    return true;
+      MasterAggregatorHandler aggregatorHandler) {
+    super(workerRequestReservedMap, conf, myTaskInfo);
+    this.aggregatorHandler = aggregatorHandler;
   }
 
   @Override
   public void processRequest(MasterRequest request) {
-    request.doRequest(commHandler);
+    request.doRequest(aggregatorHandler);
   }
 
   /**
@@ -68,25 +56,24 @@ public class MasterRequestServerHandler extends
    */
   public static class Factory implements RequestServerHandler.Factory {
     /** Master aggregator handler */
-    private final MasterGlobalCommHandler commHandler;
+    private final MasterAggregatorHandler aggregatorHandler;
 
     /**
      * Constructor
      *
-     * @param commHandler Master global communication handler
+     * @param aggregatorHandler Master aggregator handler
      */
-    public Factory(MasterGlobalCommHandler commHandler) {
-      this.commHandler = commHandler;
+    public Factory(MasterAggregatorHandler aggregatorHandler) {
+      this.aggregatorHandler = aggregatorHandler;
     }
 
     @Override
     public RequestServerHandler newHandler(
         WorkerRequestReservedMap workerRequestReservedMap,
         ImmutableClassesGiraphConfiguration conf,
-        TaskInfo myTaskInfo,
-        Thread.UncaughtExceptionHandler exceptionHandler) {
+        TaskInfo myTaskInfo) {
       return new MasterRequestServerHandler(workerRequestReservedMap, conf,
-          myTaskInfo, commHandler, exceptionHandler);
+          myTaskInfo, aggregatorHandler);
     }
   }
 }

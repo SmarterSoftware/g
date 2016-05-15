@@ -129,7 +129,7 @@ public class FileUtils {
         writer.write('\n');
       }
     } finally {
-      Closeables.close(writer, true);
+      Closeables.closeQuietly(writer);
     }
   }
 

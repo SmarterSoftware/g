@@ -34,14 +34,6 @@ import org.apache.hadoop.io.WritableComparable;
 public interface MessageStore<I extends WritableComparable,
     M extends Writable> {
   /**
-   * True if this message-store encodes messages as a list of long pointers
-   * to compact serialized messages
-   *
-   * @return true if we encode messages as a list of pointers
-   */
-  boolean isPointerListEncoding();
-
-  /**
    * Gets messages for a vertex.  The lifetime of every message is only
    * guaranteed until the iterator's next() method is called. Do not hold
    * references to objects returned by this iterator.
@@ -51,6 +43,21 @@ public interface MessageStore<I extends WritableComparable,
    * @throws java.io.IOException
    */
   Iterable<M> getVertexMessages(I vertexId) throws IOException;
+
+  /**
+   * Gets messages for a vertex and removes it from the underlying store.
+   * The lifetime of every message is only guaranteed until the iterator's
+   * next() method is called. Do not hold references to objects returned
+   * by this iterator.
+   *
+   * Similar to getVertexMessages() followed by clearVertexMessages(),
+   * but this is "atomic" and returns an iterable after clearing.
+   *
+   * @param vertexId Vertex id for which we want to get messages
+   * @return Iterable of messages for a vertex id
+   * @throws java.io.IOException
+   */
+  Iterable<M> removeVertexMessages(I vertexId) throws IOException;
 
   /**
    * Clears messages for a vertex.
@@ -76,12 +83,31 @@ public interface MessageStore<I extends WritableComparable,
   boolean hasMessagesForVertex(I vertexId);
 
   /**
-   * Check if we have messages for some partition
+   * YH: Check if we have any unprocessed messages for a partition.
    *
-   * @param partitionId Id of partition which we want to check
-   * @return True iff we have messages for the given partition
+   * @param partitionId Id of partition
+   * @return True if we have unprocessed messages for the partition
    */
   boolean hasMessagesForPartition(int partitionId);
+
+  /**
+   * YH: Check if we have any unprocessed messages.
+   *
+   * @return True if we have unprocessed messages
+   */
+  boolean hasMessages();
+
+  /**
+   * YH: Adds an unserialized message for partition.
+   * Caller can invalidate destVertexId or message after the call.
+   *
+   * @param partitionId Id of partition
+   * @param destVertexId Target vertex id (must be local to worker)
+   * @param message Unserialized message to add
+   * @throws IOException
+   */
+  void addPartitionMessage(int partitionId, I destVertexId, M message)
+    throws IOException;
 
   /**
    * Adds messages for partition
@@ -93,13 +119,6 @@ public interface MessageStore<I extends WritableComparable,
   void addPartitionMessages(
       int partitionId, VertexIdMessages<I, M> messages)
     throws IOException;
-
-  /**
-   * Called before start of computation in bspworker
-   * Since it is run from a single thread while the store is not being
-   * accessed by any other thread - this is ensured to be thread-safe
-   */
-  void finalizeStore();
 
   /**
    * Gets vertex ids from selected partition which we have messages for

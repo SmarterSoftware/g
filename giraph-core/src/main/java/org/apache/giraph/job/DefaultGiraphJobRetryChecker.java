@@ -30,10 +30,4 @@ public class DefaultGiraphJobRetryChecker implements GiraphJobRetryChecker {
     // By default, don't retry failed jobs
     return false;
   }
-
-  @Override
-  public String shouldRestartCheckpoint(Job lastAttempt) {
-    return null;
-  }
-
 }

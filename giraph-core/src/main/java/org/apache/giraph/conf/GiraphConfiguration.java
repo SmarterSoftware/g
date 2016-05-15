@@ -18,28 +18,17 @@
 
 package org.apache.giraph.conf;
 
-import io.netty.buffer.ByteBufAllocator;
-import io.netty.buffer.PooledByteBufAllocator;
-import io.netty.buffer.UnpooledByteBufAllocator;
-
-import java.net.InetAddress;
-import java.net.UnknownHostException;
-
 import org.apache.giraph.aggregators.AggregatorWriter;
-import org.apache.giraph.bsp.checkpoints.CheckpointSupportedChecker;
 import org.apache.giraph.combiner.MessageCombiner;
 import org.apache.giraph.edge.OutEdges;
 import org.apache.giraph.edge.ReuseObjectsOutEdges;
 import org.apache.giraph.factories.ComputationFactory;
+import org.apache.giraph.graph.VertexValueCombiner;
+import org.apache.giraph.graph.VertexResolver;
 import org.apache.giraph.factories.VertexValueFactory;
 import org.apache.giraph.graph.Computation;
-import org.apache.giraph.graph.MapperObserver;
-import org.apache.giraph.graph.Vertex;
-import org.apache.giraph.graph.VertexResolver;
-import org.apache.giraph.graph.VertexValueCombiner;
 import org.apache.giraph.io.EdgeInputFormat;
 import org.apache.giraph.io.EdgeOutputFormat;
-import org.apache.giraph.io.MappingInputFormat;
 import org.apache.giraph.io.VertexInputFormat;
 import org.apache.giraph.io.VertexOutputFormat;
 import org.apache.giraph.io.filters.EdgeInputFilter;
@@ -57,6 +46,12 @@ import org.apache.giraph.worker.WorkerObserver;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.mapreduce.Mapper;
 import org.apache.hadoop.net.DNS;
+
+import io.netty.buffer.ByteBufAllocator;
+import io.netty.buffer.PooledByteBufAllocator;
+import io.netty.buffer.UnpooledByteBufAllocator;
+
+import java.net.UnknownHostException;
 
 /**
  * Adds user methods specific to Giraph.  This will be put into an
@@ -178,16 +173,6 @@ public class GiraphConfiguration extends Configuration
   }
 
   /**
-   * Set the vertex implementation class
-   *
-   * @param vertexClass class of the vertex implementation
-   */
-  public final void setVertexClass(Class<? extends Vertex> vertexClass) {
-    VERTEX_CLASS.set(this, vertexClass);
-  }
-
-
-  /**
    * Set the vertex edges class used during edge-based input (if different
    * from the one used during computation)
    *
@@ -274,16 +259,6 @@ public class GiraphConfiguration extends Configuration
   }
 
   /**
-   * Set the mapping input format class (optional)
-   *
-   * @param mappingInputFormatClass Determines how mappings are input
-   */
-  public void setMappingInputFormatClass(
-    Class<? extends MappingInputFormat> mappingInputFormatClass) {
-    MAPPING_INPUT_FORMAT_CLASS.set(this, mappingInputFormatClass);
-  }
-
-  /**
    * Set the master class (optional)
    *
    * @param masterComputeClass Runs master computation
@@ -311,16 +286,6 @@ public class GiraphConfiguration extends Configuration
   public final void addWorkerObserverClass(
       Class<? extends WorkerObserver> workerObserverClass) {
     WORKER_OBSERVER_CLASSES.add(this, workerObserverClass);
-  }
-
-  /**
-   * Add a MapperObserver class (optional)
-   *
-   * @param mapperObserverClass MapperObserver class to add.
-   */
-  public final void addMapperObserverClass(
-      Class<? extends MapperObserver> mapperObserverClass) {
-    MAPPER_OBSERVER_CLASSES.add(this, mapperObserverClass);
   }
 
   /**
@@ -367,15 +332,6 @@ public class GiraphConfiguration extends Configuration
    */
   public boolean isJMapHistogramDumpEnabled() {
     return JMAP_ENABLE.get(this);
-  }
-
-  /**
-   * Check whether to enable heap memory supervisor thread
-   *
-   * @return true if jmap dumper is reactively enabled
-   */
-  public boolean isReactiveJmapHistogramDumpEnabled() {
-    return REACTIVE_JMAP_ENABLE.get(this);
   }
 
   /**
@@ -539,6 +495,15 @@ public class GiraphConfiguration extends Configuration
   }
 
   /**
+   * Get the message combiner class (optional)
+   *
+   * @return messageCombinerClass Determines how vertex messages are combined
+   */
+  public Class<? extends MessageCombiner> getMessageCombinerClass() {
+    return MESSAGE_COMBINER_CLASS.get(this);
+  }
+
+  /**
    * Set the message combiner class (optional)
    *
    * @param messageCombinerClass Determines how vertex messages are combined
@@ -695,15 +660,6 @@ public class GiraphConfiguration extends Configuration
    */
   public Class<? extends WorkerObserver>[] getWorkerObserverClasses() {
     return WORKER_OBSERVER_CLASSES.getArray(this);
-  }
-
-  /**
-   * Get array of MapperObserver classes set in configuration.
-   *
-   * @return array of MapperObserver classes.
-   */
-  public Class<? extends MapperObserver>[] getMapperObserverClasses() {
-    return MAPPER_OBSERVER_CLASSES.getArray(this);
   }
 
   /**
@@ -957,10 +913,6 @@ public class GiraphConfiguration extends Configuration
     return NUM_COMPUTE_THREADS.get(this);
   }
 
-  public int getNumOocThreads() {
-    return NUM_OOC_THREADS.get(this);
-  }
-
   /**
    * Set the number of input split threads
    *
@@ -1028,18 +980,6 @@ public class GiraphConfiguration extends Configuration
    */
   public boolean useCheckpointing() {
     return getCheckpointFrequency() != 0;
-  }
-
-  /**
-   * Set runtime checkpoint support checker.
-   * The instance of this class will have to decide whether
-   * checkpointing is allowed on current superstep.
-   *
-   * @param clazz checkpoint supported checker class
-   */
-  public void setCheckpointSupportedChecker(
-      Class<? extends CheckpointSupportedChecker> clazz) {
-    GiraphConstants.CHECKPOINT_SUPPORTED_CHECKER.set(this, clazz);
   }
 
   /**
@@ -1135,19 +1075,6 @@ public class GiraphConfiguration extends Configuration
   }
 
   /**
-   * Return local host name by default. Or local host IP if preferIP
-   * option is set.
-   * @return local host name or IP
-   * @throws UnknownHostException
-   */
-  public String getLocalHostOrIp() throws UnknownHostException {
-    if (GiraphConstants.PREFER_IP_ADDRESSES.get(this)) {
-      return InetAddress.getLocalHost().getHostAddress();
-    }
-    return getLocalHostname();
-  }
-
-  /**
    * Set the maximum number of supersteps of this application.  After this
    * many supersteps are executed, the application will shutdown.
    *
@@ -1237,8 +1164,23 @@ public class GiraphConfiguration extends Configuration
   }
 
   /**
-   * Get option whether to create a source vertex present only in edge input
+   * Enable communication optimization for one-to-all messages.
+   */
+  public void enableOneToAllMsgSending() {
+    ONE_TO_ALL_MSG_SENDING.set(this, true);
+  }
+
+  /**
+   * Return if one-to-all messsage sending is enabled.
    *
+   * @return True if this option is enabled.
+   */
+  public boolean isOneToAllMsgSendingEnabled() {
+    return ONE_TO_ALL_MSG_SENDING.isTrue(this);
+  }
+
+  /**
+   * Get option whether to create a source vertex present only in edge input
    * @return CREATE_EDGE_SOURCE_VERTICES option
    */
   public boolean getCreateSourceVertex() {

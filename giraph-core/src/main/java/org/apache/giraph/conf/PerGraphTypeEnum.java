@@ -32,6 +32,8 @@ public class PerGraphTypeEnum<T extends Enum<T>> {
   private T vertexValue;
   /** data for edge value */
   private T edgeValue;
+  /** data for incoming message */
+  private T incomingMessage;
   /** data for outgoing message */
   private T outgoingMessage;
 
@@ -61,6 +63,7 @@ public class PerGraphTypeEnum<T extends Enum<T>> {
     setVertexId(options.getVertexId(), conf);
     setVertexValue(options.getVertexValue(), conf);
     setEdgeValue(options.getEdgeValue(), conf);
+    setIncomingMessage(options.getIncomingMessage(), conf);
     setOutgoingMessage(options.getOutgoingMessage(), conf);
   }
 
@@ -95,6 +98,16 @@ public class PerGraphTypeEnum<T extends Enum<T>> {
   }
 
   /**
+   * Set the incoming message value data from the option
+   *
+   * @param option EnumConfOption option to use
+   * @param conf Configuration
+   */
+  public void setIncomingMessage(EnumConfOption<T> option, Configuration conf) {
+    incomingMessage = option.get(conf);
+  }
+
+  /**
    * Set the outgoing message value data from the option
    *
    * @param option EnumConfOption option to use
@@ -118,6 +131,8 @@ public class PerGraphTypeEnum<T extends Enum<T>> {
       return vertexValue;
     case EDGE_VALUE:
       return edgeValue;
+    case INCOMING_MESSAGE_VALUE:
+      return incomingMessage;
     case OUTGOING_MESSAGE_VALUE:
       return outgoingMessage;
     default:
@@ -128,6 +143,10 @@ public class PerGraphTypeEnum<T extends Enum<T>> {
 
   public T getEdgeValue() {
     return edgeValue;
+  }
+
+  public T getIncomingMessage() {
+    return incomingMessage;
   }
 
   public T getOutgoingMessage() {

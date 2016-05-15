@@ -18,9 +18,6 @@
 
 package org.apache.giraph.comm.netty;
 
-import org.apache.commons.lang3.tuple.ImmutablePair;
-import org.apache.commons.lang3.tuple.Pair;
-import org.apache.giraph.comm.netty.handler.AckSignalFlag;
 import org.apache.giraph.comm.netty.handler.AddressRequestIdGenerator;
 import org.apache.giraph.comm.netty.handler.ClientRequestId;
 import org.apache.giraph.comm.netty.handler.RequestEncoder;
@@ -33,42 +30,29 @@ import org.apache.giraph.comm.requests.RequestType;
 import org.apache.giraph.comm.requests.SaslTokenMessageRequest;
 /*end[HADOOP_NON_SECURE]*/
 import org.apache.giraph.comm.requests.WritableRequest;
-import org.apache.giraph.conf.BooleanConfOption;
-import org.apache.giraph.conf.FloatConfOption;
 import org.apache.giraph.conf.GiraphConstants;
 import org.apache.giraph.conf.ImmutableClassesGiraphConfiguration;
-import org.apache.giraph.conf.IntConfOption;
 import org.apache.giraph.graph.TaskInfo;
-import org.apache.giraph.metrics.GiraphMetrics;
-import org.apache.giraph.metrics.MetricNames;
-import org.apache.giraph.metrics.ResetSuperstepMetricsObserver;
-import org.apache.giraph.metrics.SuperstepMetricsRegistry;
 import org.apache.giraph.utils.PipelineUtils;
 import org.apache.giraph.utils.ProgressableUtils;
-import org.apache.giraph.utils.ThreadUtils;
 import org.apache.giraph.utils.TimedLogger;
+import org.apache.giraph.worker.BspServiceWorker;
 import org.apache.hadoop.mapreduce.Mapper;
 import org.apache.log4j.Logger;
 
 import com.google.common.collect.Lists;
 import com.google.common.collect.MapMaker;
 import com.google.common.collect.Maps;
-import com.yammer.metrics.core.Counter;
+import com.google.common.util.concurrent.ThreadFactoryBuilder;
 
-/*if_not[HADOOP_NON_SECURE]*/
 import java.io.IOException;
-/*end[HADOOP_NON_SECURE]*/
 import java.net.InetSocketAddress;
-import java.util.ArrayDeque;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.Comparator;
-import java.util.Deque;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentMap;
-import java.util.concurrent.Semaphore;
-import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -83,14 +67,11 @@ import io.netty.channel.nio.NioEventLoopGroup;
 import io.netty.channel.socket.SocketChannel;
 import io.netty.channel.socket.nio.NioSocketChannel;
 import io.netty.handler.codec.FixedLengthFrameDecoder;
-/*if_not[HADOOP_NON_SECURE]*/
 import io.netty.handler.codec.LengthFieldBasedFrameDecoder;
 import io.netty.util.AttributeKey;
-/*end[HADOOP_NON_SECURE]*/
 import io.netty.util.concurrent.DefaultEventExecutorGroup;
 import io.netty.util.concurrent.EventExecutorGroup;
 
-import static com.google.common.base.Preconditions.checkState;
 import static org.apache.giraph.conf.GiraphConstants.CLIENT_RECEIVE_BUFFER_SIZE;
 import static org.apache.giraph.conf.GiraphConstants.CLIENT_SEND_BUFFER_SIZE;
 import static org.apache.giraph.conf.GiraphConstants.MAX_REQUEST_MILLISECONDS;
@@ -100,58 +81,25 @@ import static org.apache.giraph.conf.GiraphConstants.NETTY_CLIENT_EXECUTION_THRE
 import static org.apache.giraph.conf.GiraphConstants.NETTY_CLIENT_USE_EXECUTION_HANDLER;
 import static org.apache.giraph.conf.GiraphConstants.NETTY_MAX_CONNECTION_FAILURES;
 import static org.apache.giraph.conf.GiraphConstants.WAITING_REQUEST_MSECS;
+
 /**
  * Netty client for sending requests.  Thread-safe.
  */
-public class NettyClient implements ResetSuperstepMetricsObserver {
+public class NettyClient {
   /** Do we have a limit on number of open requests we can have */
-  public static final BooleanConfOption LIMIT_NUMBER_OF_OPEN_REQUESTS =
-      new BooleanConfOption("giraph.waitForRequestsConfirmation", false,
-          "Whether to have a limit on number of open requests or not");
+  public static final String LIMIT_NUMBER_OF_OPEN_REQUESTS =
+      "giraph.waitForRequestsConfirmation";
+  /** Default choice about having a limit on number of open requests */
+  public static final boolean LIMIT_NUMBER_OF_OPEN_REQUESTS_DEFAULT = false;
   /** Maximum number of requests without confirmation we should have */
-  public static final IntConfOption MAX_NUMBER_OF_OPEN_REQUESTS =
-      new IntConfOption("giraph.maxNumberOfOpenRequests", 10000,
-          "Maximum number of requests without confirmation we should have");
-
-  /**
-   * Do we have a limit on number of open requests we can have for each worker.
-   * Note that if this option is enabled, Netty will not keep more than a
-   * certain number of requests open for each other worker in the job. If there
-   * are more requests generated for a worker, Netty will not actually send the
-   * surplus requests, instead, it caches the requests in a local buffer. The
-   * maximum number of these unsent requests in the cache is another
-   * user-defined parameter (MAX_NUM_OF_OPEN_REQUESTS_PER_WORKER).
-   */
-  public static final BooleanConfOption LIMIT_OPEN_REQUESTS_PER_WORKER =
-      new BooleanConfOption("giraph.waitForPerWorkerRequests", false,
-          "Whether to have a limit on number of open requests for each worker" +
-              "or not");
-  /**
-   * Maximum number of requests we can have per worker without confirmation
-   * (i.e. open requests)
-   */
-  public static final IntConfOption MAX_NUM_OF_OPEN_REQUESTS_PER_WORKER =
-      new IntConfOption("giraph.maxOpenRequestsPerWorker", 20,
-          "Maximum number of requests without confirmation we can have per " +
-              "worker");
-  /** Aggregate number of in-memory unsent requests */
-  public static final IntConfOption MAX_NUM_OF_UNSENT_REQUESTS =
-      new IntConfOption("giraph.maxNumberOfUnsentRequests", 2000,
-          "Maximum number of unsent requests we can keep in memory");
-  /**
-   * Time interval to wait on unsent requests cahce until we find a spot in it
-   */
-  public static final IntConfOption UNSENT_CACHE_WAIT_INTERVAL =
-      new IntConfOption("giraph.unsentCacheWaitInterval", 1000,
-          "Time interval to wait on unsent requests cache (in milliseconds)");
-  /**
-   * After pausing a thread due to too large number of open requests,
-   * which fraction of these requests need to be closed before we continue
-   */
-  public static final FloatConfOption
-  FRACTION_OF_REQUESTS_TO_CLOSE_BEFORE_PROCEEDING =
-      new FloatConfOption("giraph.fractionOfRequestsToCloseBeforeProceeding",
-          0.2f, "Fraction of requests to close before proceeding");
+  public static final String MAX_NUMBER_OF_OPEN_REQUESTS =
+      "giraph.maxNumberOfOpenRequests";
+  /** Default maximum number of requests without confirmation */
+  // YH: set this MUCH lower so we don't end up w/ too many open requests
+  // note that this is for, roughly, req/ms rather than req/s
+  //
+  // TODO-YH: tune? (empirically, should keep it <100 for good performance)
+  public static final int MAX_NUMBER_OF_OPEN_REQUESTS_DEFAULT = 32;
   /** Maximum number of requests to list (for debugging) */
   public static final int MAX_REQUESTS_TO_LIST = 10;
   /**
@@ -202,53 +150,13 @@ public class NettyClient implements ResetSuperstepMetricsObserver {
   private final int receiveBufferSize;
   /** Do we have a limit on number of open requests */
   private final boolean limitNumberOfOpenRequests;
-  /** Warn if request size is bigger than the buffer size by this factor */
-  private final float requestSizeWarningThreshold;
   /** Maximum number of requests without confirmation we can have */
   private final int maxNumberOfOpenRequests;
-  /** Wait interval on unsent requests cache until it frees up */
-  private final int unsentWaitMsecs;
-  /**
-   * Maximum number of requests that can be open after the pause in order to
-   * proceed
-   */
-  private final int numberOfRequestsToProceed;
-  /** Do we have a limit on the number of open requests per worker */
-  private final boolean limitOpenRequestsPerWorker;
-  /** Maximum number of open requests we can have for each worker */
-  private final int maxOpenRequestsPerWorker;
-  /** Total number of open requests */
-  private final AtomicInteger aggregateOpenRequests;
-  /** Total number of unsent, cached requests */
-  private final AtomicInteger aggregateUnsentRequests;
-  /**
-   * Map of requests per worker. Key in the map is the worker id and the value
-   * in the map is a pair (X, Y) where:
-   *   Y = map of client request ids to request information for a particular
-   *       worker,
-   *   X = the semaphore to control the number of open requests for the
-   *       the particular worker. Basically, the number of available permits
-   *       on this semaphore is the credit available for the worker (in credit-
-   *       based control-flow mechanism), and the number of permits already
-   *       taken from the semaphore should be equal to the size of Y (unless a
-   *       transition is happening).
-   */
-  private final ConcurrentMap<Integer,
-      Pair<AdjustableSemaphore, ConcurrentMap<ClientRequestId, RequestInfo>>>
-      perWorkerOpenRequestMap;
-  /** Map of unsent, cached requests per worker */
-  private final ConcurrentMap<Integer, Deque<WritableRequest>>
-      perWorkerUnsentRequestMap;
-  /**
-   * Semaphore to control number of cached unsent request. Maximum number of
-   * permits of this semaphore should be equal to MAX_NUM_OF_UNSENT_REQUESTS.
-   */
-  private final Semaphore unsentRequestPermit;
   /** Maximum number of connection failures */
   private final int maxConnectionFailures;
   /** Maximum number of milliseconds for a request */
   private final int maxRequestMilliseconds;
-  /** Waiting interval for checking outstanding requests msecs */
+  /** Waiting internal for checking outstanding requests msecs */
   private final int waitingRequestMsecs;
   /** Timed logger for printing request debugging */
   private final TimedLogger requestLogger = new TimedLogger(15 * 1000, LOG);
@@ -272,14 +180,13 @@ public class NettyClient implements ResetSuperstepMetricsObserver {
   /** When was the last time we checked if we should resend some requests */
   private final AtomicLong lastTimeCheckedRequestsForProblems =
       new AtomicLong(0);
-  /**
-   * Logger used to dump stack traces for every exception that happens
-   * in netty client threads.
-   */
-  private final LogOnErrorChannelFutureListener logErrorListener =
-      new LogOnErrorChannelFutureListener();
-  /** Counter for time spent waiting on too many open requests */
-  private Counter timeWaitingOnOpenRequests;
+  /** Configuration */
+  private final ImmutableClassesGiraphConfiguration conf;
+
+  /** YH: Lock for synchronizing timing tracking. */
+  private final Object timingLock = new Object();
+  /** YH: Number of blocked threads. Used for timing. */
+  private volatile int blockedThreads = 0;
 
   /**
    * Only constructor
@@ -287,71 +194,46 @@ public class NettyClient implements ResetSuperstepMetricsObserver {
    * @param context Context for progress
    * @param conf Configuration
    * @param myTaskInfo Current task info
-   * @param exceptionHandler handler for uncaught exception. Will
-   *                         terminate job.
    */
   public NettyClient(Mapper<?, ?, ?, ?>.Context context,
                      final ImmutableClassesGiraphConfiguration conf,
-                     TaskInfo myTaskInfo,
-                     final Thread.UncaughtExceptionHandler exceptionHandler) {
+                     TaskInfo myTaskInfo) {
     this.context = context;
+    this.conf = conf;
     this.myTaskInfo = myTaskInfo;
     this.channelsPerServer = GiraphConstants.CHANNELS_PER_SERVER.get(conf);
     sendBufferSize = CLIENT_SEND_BUFFER_SIZE.get(conf);
     receiveBufferSize = CLIENT_RECEIVE_BUFFER_SIZE.get(conf);
-    this.requestSizeWarningThreshold =
-        GiraphConstants.REQUEST_SIZE_WARNING_THRESHOLD.get(conf);
 
-    limitNumberOfOpenRequests = LIMIT_NUMBER_OF_OPEN_REQUESTS.get(conf);
+    // YH: have to do this; else we get too many pending requests to wait on
+    limitNumberOfOpenRequests = conf.getBoolean(
+        LIMIT_NUMBER_OF_OPEN_REQUESTS,
+        conf.getAsyncConf().disableBarriers());
+    //        LIMIT_NUMBER_OF_OPEN_REQUESTS_DEFAULT);
     if (limitNumberOfOpenRequests) {
-      maxNumberOfOpenRequests = MAX_NUMBER_OF_OPEN_REQUESTS.get(conf);
-      numberOfRequestsToProceed = (int) (maxNumberOfOpenRequests *
-          (1 - FRACTION_OF_REQUESTS_TO_CLOSE_BEFORE_PROCEEDING.get(conf)));
+      maxNumberOfOpenRequests = conf.getInt(
+          MAX_NUMBER_OF_OPEN_REQUESTS,
+          MAX_NUMBER_OF_OPEN_REQUESTS_DEFAULT);
       if (LOG.isInfoEnabled()) {
         LOG.info("NettyClient: Limit number of open requests to " +
-            maxNumberOfOpenRequests + " and proceed when <= " +
-            numberOfRequestsToProceed);
+            maxNumberOfOpenRequests);
       }
     } else {
       maxNumberOfOpenRequests = -1;
-      numberOfRequestsToProceed = 0;
-    }
-    limitOpenRequestsPerWorker = LIMIT_OPEN_REQUESTS_PER_WORKER.get(conf);
-    /* Maximum number of unsent requests we can have in total */
-    if (limitOpenRequestsPerWorker) {
-      checkState(!limitNumberOfOpenRequests, "NettyClient: it is not allowed " +
-          "to have both limitation on the number of total open requests, and " +
-          "limitation on the number of open requests per worker!");
-      maxOpenRequestsPerWorker = MAX_NUM_OF_OPEN_REQUESTS_PER_WORKER.get(conf);
-      checkState(maxOpenRequestsPerWorker > 0x3FFF ||
-          maxOpenRequestsPerWorker < 1, "NettyClient: max number of open " +
-          "requests should be in range [1, " + 0x3FFF + "]");
-      aggregateOpenRequests = new AtomicInteger(0);
-      aggregateUnsentRequests = new AtomicInteger(0);
-      perWorkerOpenRequestMap = Maps.newConcurrentMap();
-      perWorkerUnsentRequestMap = Maps.newConcurrentMap();
-      unsentRequestPermit = new Semaphore(MAX_NUM_OF_UNSENT_REQUESTS.get(conf));
-      unsentWaitMsecs = UNSENT_CACHE_WAIT_INTERVAL.get(conf);
-    } else {
-      maxOpenRequestsPerWorker = -1;
-      aggregateOpenRequests = new AtomicInteger(-1);
-      aggregateUnsentRequests = new AtomicInteger(-1);
-      perWorkerOpenRequestMap = null;
-      perWorkerUnsentRequestMap = null;
-      unsentRequestPermit = null;
-      unsentWaitMsecs = -1;
     }
 
     maxRequestMilliseconds = MAX_REQUEST_MILLISECONDS.get(conf);
+
     maxConnectionFailures = NETTY_MAX_CONNECTION_FAILURES.get(conf);
+
     waitingRequestMsecs = WAITING_REQUEST_MSECS.get(conf);
+
     maxPoolSize = GiraphConstants.NETTY_CLIENT_THREADS.get(conf);
+
     maxResolveAddressAttempts = MAX_RESOLVE_ADDRESS_ATTEMPTS.get(conf);
 
     clientRequestIdRequestInfoMap =
         new MapMaker().concurrencyLevel(maxPoolSize).makeMap();
-
-    GiraphMetrics.get().addSuperstepResetObserver(this);
 
     handlerToUseExecutionGroup =
         NETTY_CLIENT_EXECUTION_AFTER_HANDLER.get(conf);
@@ -359,8 +241,8 @@ public class NettyClient implements ResetSuperstepMetricsObserver {
     if (useExecutionGroup) {
       int executionThreads = NETTY_CLIENT_EXECUTION_THREADS.get(conf);
       executionGroup = new DefaultEventExecutorGroup(executionThreads,
-          ThreadUtils.createThreadFactory(
-              "netty-client-exec-%d", exceptionHandler));
+          new ThreadFactoryBuilder().setNameFormat("netty-client-exec-%d")
+              .build());
       if (LOG.isInfoEnabled()) {
         LOG.info("NettyClient: Using execution handler with " +
             executionThreads + " threads after " +
@@ -371,8 +253,8 @@ public class NettyClient implements ResetSuperstepMetricsObserver {
     }
 
     workerGroup = new NioEventLoopGroup(maxPoolSize,
-        ThreadUtils.createThreadFactory(
-            "netty-client-worker-%d", exceptionHandler));
+        new ThreadFactoryBuilder().setNameFormat(
+            "netty-client-worker-%d").build());
 
     bootstrap = new Bootstrap();
     bootstrap.group(workerGroup)
@@ -387,7 +269,7 @@ public class NettyClient implements ResetSuperstepMetricsObserver {
         .handler(new ChannelInitializer<SocketChannel>() {
           @Override
           protected void initChannel(SocketChannel ch) throws Exception {
-/*if_not[HADOOP_NON_SECURE]*/
+      /*if_not[HADOOP_NON_SECURE]*/
             if (conf.authenticate()) {
               LOG.info("Using Netty with authentication.");
 
@@ -401,20 +283,11 @@ public class NettyClient implements ResetSuperstepMetricsObserver {
               PipelineUtils.addLastWithExecutorCheck("clientInboundByteCounter",
                   inboundByteCounter, handlerToUseExecutionGroup,
                   executionGroup, ch);
-              if (conf.doCompression()) {
-                PipelineUtils.addLastWithExecutorCheck("compressionDecoder",
-                    conf.getNettyCompressionDecoder(),
-                    handlerToUseExecutionGroup, executionGroup, ch);
-              }
               PipelineUtils.addLastWithExecutorCheck(
                   "clientOutboundByteCounter",
                   outboundByteCounter, handlerToUseExecutionGroup,
                   executionGroup, ch);
-              if (conf.doCompression()) {
-                PipelineUtils.addLastWithExecutorCheck("compressionEncoder",
-                    conf.getNettyCompressionEncoder(),
-                    handlerToUseExecutionGroup, executionGroup, ch);
-              }
+
               // The following pipeline component is needed to decode the
               // server's SASL tokens. It is replaced with a
               // FixedLengthFrameDecoder (same as used with the
@@ -437,28 +310,18 @@ public class NettyClient implements ResetSuperstepMetricsObserver {
                   new SaslClientHandler(conf), handlerToUseExecutionGroup,
                   executionGroup, ch);
               PipelineUtils.addLastWithExecutorCheck("response-handler",
-                  new ResponseClientHandler(NettyClient.this, conf),
-                  handlerToUseExecutionGroup, executionGroup, ch);
+                  new ResponseClientHandler(clientRequestIdRequestInfoMap,
+                      conf), handlerToUseExecutionGroup, executionGroup, ch);
             } else {
               LOG.info("Using Netty without authentication.");
 /*end[HADOOP_NON_SECURE]*/
               PipelineUtils.addLastWithExecutorCheck("clientInboundByteCounter",
                   inboundByteCounter, handlerToUseExecutionGroup,
                   executionGroup, ch);
-              if (conf.doCompression()) {
-                PipelineUtils.addLastWithExecutorCheck("compressionDecoder",
-                    conf.getNettyCompressionDecoder(),
-                    handlerToUseExecutionGroup, executionGroup, ch);
-              }
               PipelineUtils.addLastWithExecutorCheck(
                   "clientOutboundByteCounter",
                   outboundByteCounter, handlerToUseExecutionGroup,
                   executionGroup, ch);
-              if (conf.doCompression()) {
-                PipelineUtils.addLastWithExecutorCheck("compressionEncoder",
-                    conf.getNettyCompressionEncoder(),
-                    handlerToUseExecutionGroup, executionGroup, ch);
-              }
               PipelineUtils.addLastWithExecutorCheck(
                   "fixed-length-frame-decoder",
                   new FixedLengthFrameDecoder(
@@ -468,20 +331,14 @@ public class NettyClient implements ResetSuperstepMetricsObserver {
                     new RequestEncoder(conf), handlerToUseExecutionGroup,
                   executionGroup, ch);
               PipelineUtils.addLastWithExecutorCheck("response-handler",
-                  new ResponseClientHandler(NettyClient.this, conf),
-                  handlerToUseExecutionGroup, executionGroup, ch);
+                    new ResponseClientHandler(clientRequestIdRequestInfoMap,
+                        conf), handlerToUseExecutionGroup, executionGroup, ch);
 
 /*if_not[HADOOP_NON_SECURE]*/
             }
 /*end[HADOOP_NON_SECURE]*/
           }
         });
-  }
-
-  @Override
-  public void newSuperstep(SuperstepMetricsRegistry metrics) {
-    timeWaitingOnOpenRequests = metrics.getCounter(
-        MetricNames.TIME_SPENT_WAITING_ON_TOO_MANY_OPEN_REQUESTS_MS);
   }
 
   /**
@@ -526,14 +383,13 @@ public class NettyClient implements ResetSuperstepMetricsObserver {
         Lists.newArrayListWithCapacity(tasks.size() * channelsPerServer);
     for (TaskInfo taskInfo : tasks) {
       context.progress();
-      int taskId = taskInfo.getTaskId();
-      InetSocketAddress address = taskIdAddressMap.get(taskId);
+      InetSocketAddress address = taskIdAddressMap.get(taskInfo.getTaskId());
       if (address == null ||
           !address.getHostName().equals(taskInfo.getHostname()) ||
           address.getPort() != taskInfo.getPort()) {
         address = resolveAddress(maxResolveAddressAttempts,
-            taskInfo.getHostOrIp(), taskInfo.getPort());
-        taskIdAddressMap.put(taskId, address);
+            taskInfo.getInetSocketAddress());
+        taskIdAddressMap.put(taskInfo.getTaskId(), address);
       }
       if (address == null || address.getHostName() == null ||
           address.getHostName().isEmpty()) {
@@ -545,15 +401,6 @@ public class NettyClient implements ResetSuperstepMetricsObserver {
             "address " + address);
       }
 
-      if (limitOpenRequestsPerWorker &&
-          !perWorkerOpenRequestMap.containsKey(taskId)) {
-        perWorkerOpenRequestMap.put(taskId,
-            new ImmutablePair<>(
-                new AdjustableSemaphore(maxOpenRequestsPerWorker),
-                Maps.<ClientRequestId, RequestInfo>newConcurrentMap()));
-        perWorkerUnsentRequestMap
-            .put(taskId, new ArrayDeque<WritableRequest>());
-      }
       if (addressChannelMap.containsKey(address)) {
         continue;
       }
@@ -564,7 +411,7 @@ public class NettyClient implements ResetSuperstepMetricsObserver {
 
         waitingConnectionList.add(
             new ChannelFutureAddress(
-                connectionFuture, address, taskId));
+                connectionFuture, address, taskInfo.getTaskId()));
       }
     }
 
@@ -813,129 +660,24 @@ public class NettyClient implements ResetSuperstepMetricsObserver {
    * @param destTaskId Destination task id
    * @param request Request to send
    */
-  public void sendWritableRequest(int destTaskId,
-      WritableRequest request) {
-    ConcurrentMap<ClientRequestId, RequestInfo> requestMap;
-    if (limitOpenRequestsPerWorker) {
-      requestMap = reserveSpotForRequest(destTaskId, request);
-      if (requestMap == null) {
-        return;
-      }
-    } else {
-      requestMap = clientRequestIdRequestInfoMap;
-    }
-
-    doSend(destTaskId, request, requestMap);
-
-    if (limitNumberOfOpenRequests &&
-        requestMap.size() > maxNumberOfOpenRequests) {
-      long startTime = System.currentTimeMillis();
-      waitSomeRequests(numberOfRequestsToProceed);
-      timeWaitingOnOpenRequests.inc(System.currentTimeMillis() - startTime);
-    } else if (limitOpenRequestsPerWorker) {
-      aggregateOpenRequests.getAndIncrement();
-    }
+  public void sendWritableRequest(Integer destTaskId,
+                                  WritableRequest request) {
+    // YH: by default, calls are blocked if request limit is exceeded
+    sendWritableRequest(destTaskId, request, false);
   }
 
   /**
-   * Try to reserve a spot in the open requests map for a specific worker. If
-   * no spot is available in the open requests map, try to reserve a spot in the
-   * unsent requests cache. If there is no spot there too, wait until a spot
-   * becomes available either in the open requests map or unsent requests cache.
-   * This method is used when credit-based flow-control is enabled.
+   * Send a request to a remote server (should be already connected)
    *
    * @param destTaskId Destination task id
    * @param request Request to send
-   * @return Open request map of the given task, or null if there was no spot in
-   *         the open request map, but there was a spot in unsent requests cache
+   * @param nonBlocking True if call must not block
    */
-  private ConcurrentMap<ClientRequestId, RequestInfo>
-  reserveSpotForRequest(int destTaskId, WritableRequest request) {
-    Pair<AdjustableSemaphore, ConcurrentMap<ClientRequestId, RequestInfo>>
-        pair = perWorkerOpenRequestMap.get(destTaskId);
-    ConcurrentMap<ClientRequestId, RequestInfo> requestMap = pair.getRight();
-    final AdjustableSemaphore openRequestPermit = pair.getLeft();
-    // Try to reserve a spot for the request amongst the open requests of
-    // the destination worker.
-    boolean shouldSend = openRequestPermit.tryAcquire();
-    boolean shouldCache = false;
-    while (!shouldSend) {
-      // We should not send the request, and should cache the request instead.
-      // It may be possible that the unsent message cache is also full, so we
-      // should try to acquire a space on the cache, and if there is no extra
-      // space in unsent request cache, we should wait until some space
-      // become available. However, it is possible that during the time we are
-      // waiting on the unsent messages cache, actual buffer for open requests
-      // frees up space.
-      try {
-        shouldCache = unsentRequestPermit.tryAcquire(unsentWaitMsecs,
-            TimeUnit.MILLISECONDS);
-      } catch (InterruptedException e) {
-        throw new IllegalStateException("sendWritableRequest: failed " +
-            "while waiting on the unsent request cache to have some more " +
-            "room for extra unsent requests!");
-      }
-      if (shouldCache) {
-        break;
-      }
-      // We may have an open spot in the meantime that we were waiting on the
-      // unsent requests.
-      shouldSend = openRequestPermit.tryAcquire();
-      if (shouldSend) {
-        break;
-      }
-      // The current thread will be at this point only if it could not make
-      // space amongst open requests for the destination worker and has been
-      // timed-out in trying to acquire a space amongst unsent messages. So,
-      // we should report logs, report progress, and check for request
-      // failures.
-      logInfoAboutOpenRequests(-1);
-      context.progress();
-      checkRequestsForProblems();
-    }
-    // Either shouldSend == true or shouldCache == true
-    if (shouldCache) {
-      Deque<WritableRequest> unsentRequests =
-          perWorkerUnsentRequestMap.get(destTaskId);
-      // This synchronize block is necessary for the following reason:
-      // Once we are at this point, it means there was no room for this
-      // request to become an open request, hence we have to put it into
-      // unsent cache. Consider the case that since last time we checked if
-      // there is any room for an additional open request so far, all open
-      // requests are delivered and their acknowledgements are also processed.
-      // Now, if we put this request in the unsent cache, it is not being
-      // considered to become an open request, as the only one who checks
-      // on this matter would be the one who receives an acknowledgment for an
-      // open request for the destination worker. So, a lock is necessary
-      // to forcefully serialize the execution if this scenario is about to
-      // happen.
-      synchronized (unsentRequests) {
-        shouldSend = openRequestPermit.tryAcquire();
-        if (!shouldSend) {
-          aggregateUnsentRequests.getAndIncrement();
-          unsentRequests.add(request);
-          return null;
-        }
-      }
-    }
-    return requestMap;
-  }
-
-  /**
-   * Sends a request.
-   *
-   * @param destTaskId destination to send the request to
-   * @param request request itself
-   * @param requestMap the map that should hold the request, used for tracking
-   *                   the request later
-   */
-  private void doSend(int destTaskId, WritableRequest request,
-      ConcurrentMap<ClientRequestId, RequestInfo> requestMap) {
+  public void sendWritableRequest(Integer destTaskId,
+                                  WritableRequest request,
+                                  boolean nonBlocking) {
     InetSocketAddress remoteServer = taskIdAddressMap.get(destTaskId);
-    if ((limitOpenRequestsPerWorker &&
-        aggregateOpenRequests.get() == 0) ||
-        (!limitOpenRequestsPerWorker &&
-            requestMap.isEmpty())) {
+    if (clientRequestIdRequestInfoMap.isEmpty()) {
       inboundByteCounter.resetAll();
       outboundByteCounter.resetAll();
     }
@@ -954,7 +696,7 @@ public class NettyClient implements ResetSuperstepMetricsObserver {
         addressRequestIdGenerator.getNextRequestId(remoteServer));
       ClientRequestId clientRequestId =
         new ClientRequestId(destTaskId, request.getRequestId());
-      RequestInfo oldRequestInfo = requestMap.putIfAbsent(
+      RequestInfo oldRequestInfo = clientRequestIdRequestInfoMap.putIfAbsent(
         clientRequestId, newRequestInfo);
       if (oldRequestInfo != null) {
         throw new IllegalStateException("sendWritableRequest: Impossible to " +
@@ -962,187 +704,21 @@ public class NettyClient implements ResetSuperstepMetricsObserver {
           "request info of " + oldRequestInfo);
       }
     }
-    if (request.getSerializedSize() >
-        requestSizeWarningThreshold * sendBufferSize) {
-      LOG.warn("Creating large request of type " + request.getClass() +
-        ", size " + request.getSerializedSize() +
-        " bytes. Check netty buffer size.");
-    }
     ChannelFuture writeFuture = channel.write(request);
     newRequestInfo.setWriteFuture(writeFuture);
-    writeFuture.addListener(logErrorListener);
-  }
 
-  /**
-   * Get the response flag from a response
-   *
-   * @param response response received
-   * @return AckSignalFlag coming with the response
-   */
-  public static AckSignalFlag getAckSignalFlag(short response) {
-    return AckSignalFlag.values()[(response >> 15) & 1];
-  }
-
-  /**
-   * Whether response specifies that credit should be ignored
-   *
-   * @param response response received
-   * @return true iff credit should be ignored, false otherwise
-   */
-  public static boolean shouldIgnoreCredit(short response) {
-    return ((short) ((response >> 14) & 1)) == 1;
-  }
-
-  /**
-   * Get the credit from a response
-   *
-   * @param response response received
-   * @return credit from the received response
-   */
-  public static short getCredit(short response) {
-    return (short) (response & 0x3FFF);
-  }
-
-  /**
-   * Calculate/Build a response for given flag and credit
-   *
-   * @param flag AckSignalFlag that should be sent with the response
-   * @param ignoreCredit whether this response specified to ignore the credit
-   * @param credit if credit is not ignored, what should be the max credit
-   * @return the response to be sent out along with the acknowledgement
-   */
-  public static short calculateResponse(AckSignalFlag flag,
-                                        boolean ignoreCredit, short credit) {
-    if (credit > 0x3FFF || credit < 1) {
-      LOG.warn("calculateResponse: value of the credit is " + credit +
-          " while it should be in range [1, " + 0x3FFF + "]");
-      credit = (short) Math.max((short) Math.min(credit, 0x3FFF), 1);
-    }
-    return (short) ((flag.ordinal() << 15) |
-        ((ignoreCredit ? 1 : 0) << 14) | (credit & 0x3FFF));
-  }
-
-  /**
-   * Handle receipt of a message. Called by response handler.
-   *
-   * @param senderId Id of sender of the message
-   * @param requestId Id of the request
-   * @param response Actual response
-   * @param shouldDrop Drop the message?
-   */
-  public void messageReceived(int senderId, long requestId, short response,
-      boolean shouldDrop) {
-    if (shouldDrop) {
-      if (!limitOpenRequestsPerWorker) {
-        synchronized (clientRequestIdRequestInfoMap) {
-          clientRequestIdRequestInfoMap.notifyAll();
-        }
-      }
+    // YH: also ignore request limit/do not block on new phase
+    // (b/c it may be followed by global SS)
+    if (nonBlocking ||
+        (conf.getAsyncConf().isMultiPhase() &&
+         conf.getAsyncConf().isNewPhase())) {
       return;
     }
-    boolean shouldIgnoreCredit = shouldIgnoreCredit(response);
-    short credit = getCredit(response);
-    AckSignalFlag responseFlag = getAckSignalFlag(response);
-    if (responseFlag == AckSignalFlag.DUPLICATE_REQUEST) {
-      LOG.info("messageReceived: Already completed request (taskId = " +
-          senderId + ", requestId = " + requestId + ")");
-    } else if (responseFlag != AckSignalFlag.NEW_REQUEST) {
-      throw new IllegalStateException(
-          "messageReceived: Got illegal response " + response);
-    }
-    RequestInfo requestInfo;
-    int numOpenRequests;
-    if (limitOpenRequestsPerWorker) {
-      requestInfo =
-          processResponse(senderId, requestId, shouldIgnoreCredit, credit);
-      numOpenRequests = aggregateOpenRequests.get();
-      if (numOpenRequests == 0) {
-        synchronized (aggregateOpenRequests) {
-          aggregateOpenRequests.notifyAll();
-        }
-      }
-    } else {
-      requestInfo = clientRequestIdRequestInfoMap
-          .remove(new ClientRequestId(senderId, requestId));
-      numOpenRequests = clientRequestIdRequestInfoMap.size();
-    }
-    if (requestInfo == null) {
-      LOG.info("messageReceived: Already received response for (taskId = " +
-          senderId + ", requestId = " + requestId + ")");
-    } else {
-      if (LOG.isDebugEnabled()) {
-        LOG.debug("messageReceived: Completed (taskId = " + senderId + ")" +
-            requestInfo + ".  Waiting on " + numOpenRequests + " requests");
-      }
-    }
 
-    if (!limitOpenRequestsPerWorker) {
-      // Help waitSomeRequests() to finish faster
-      synchronized (clientRequestIdRequestInfoMap) {
-        clientRequestIdRequestInfoMap.notifyAll();
-      }
+    if (limitNumberOfOpenRequests &&
+        clientRequestIdRequestInfoMap.size() > maxNumberOfOpenRequests) {
+      waitSomeRequests(maxNumberOfOpenRequests);
     }
-  }
-
-  /**
-   * Process a response for credit based flow-control. Open up a spot in the
-   * open request map of the sender, and send from unsent requests cache as much
-   * as there is open space in the open request map.
-   *
-   * @param senderId the sender from whom we got the response
-   * @param requestId the id of the request the response belongs to
-   * @param ignoreCredit whether credit based mechanism should take action
-   * @param credit what should be the credit if credit based mechanism is
-   *               enabled
-   * @return Info of the request the response belongs to
-   */
-  private RequestInfo processResponse(int senderId, long requestId,
-                                      boolean ignoreCredit, short credit) {
-    Pair<AdjustableSemaphore, ConcurrentMap<ClientRequestId, RequestInfo>>
-        pair = perWorkerOpenRequestMap.get(senderId);
-    ConcurrentMap<ClientRequestId, RequestInfo> requestMap = pair.getRight();
-    RequestInfo requestInfo =
-        requestMap.remove(new ClientRequestId(senderId, requestId));
-    AdjustableSemaphore openRequestPermit = pair.getLeft();
-    if (requestInfo != null) {
-      openRequestPermit.release();
-      aggregateOpenRequests.getAndDecrement();
-      if (!ignoreCredit) {
-        openRequestPermit.setMaxPermits(credit);
-      }
-      Deque<WritableRequest> requestDeque =
-          perWorkerUnsentRequestMap.get(senderId);
-      // Since we received a response and we changed the credit of the sender
-      // client, we may be able to send some more requests to the sender
-      // client. So, we try to send as much request as we can to the sender
-      // client.
-      while (true) {
-        WritableRequest request;
-        synchronized (requestDeque) {
-          request = requestDeque.pollFirst();
-          if (request == null) {
-            break;
-          }
-          // See whether the sender client has any unused credit
-          if (!openRequestPermit.tryAcquire()) {
-            requestDeque.offerFirst(request);
-            break;
-          }
-        }
-        // At this point, we have a request, and we reserved a credit for the
-        // sender client. So, we send the request to the client and update
-        // the state.
-        doSend(senderId, request, requestMap);
-        if (aggregateUnsentRequests.decrementAndGet() == 0) {
-          synchronized (aggregateUnsentRequests) {
-            aggregateUnsentRequests.notifyAll();
-          }
-        }
-        aggregateOpenRequests.getAndIncrement();
-        unsentRequestPermit.release();
-      }
-    }
-    return requestInfo;
   }
 
   /**
@@ -1151,46 +727,12 @@ public class NettyClient implements ResetSuperstepMetricsObserver {
    * @throws InterruptedException
    */
   public void waitAllRequests() {
-    if (limitOpenRequestsPerWorker) {
-      waitSomeRequests(aggregateUnsentRequests);
-      waitSomeRequests(aggregateOpenRequests);
-    } else {
-      waitSomeRequests(0);
-    }
+    waitSomeRequests(0);
+    // TODO-YH: disable logging to reduce overheads for dist locking?
     if (LOG.isInfoEnabled()) {
       LOG.info("waitAllRequests: Finished all requests. " +
           inboundByteCounter.getMetrics() + "\n" + outboundByteCounter
           .getMetrics());
-    }
-  }
-
-  /**
-   * Wait for some requests to complete. The aggregate number of such requests
-   * is given. Periodically check the state of current open requests. If there
-   * is an issue in any of them, re-send the request.
-   *
-   * @param aggregateRequests object keeping aggregate number of requests to
-   *                          wait for
-   */
-  private void waitSomeRequests(final AtomicInteger aggregateRequests) {
-    while (true) {
-      synchronized (aggregateRequests) {
-        if (aggregateRequests.get() == 0) {
-          break;
-        }
-        try {
-          aggregateRequests.wait(waitingRequestMsecs);
-        } catch (InterruptedException e) {
-          throw new IllegalStateException("waitSomeRequests: failed while " +
-              "waiting on open/cached requests");
-        }
-        if (aggregateRequests.get() == 0) {
-          break;
-        }
-      }
-      logInfoAboutOpenRequests(-1);
-      context.progress();
-      checkRequestsForProblems();
     }
   }
 
@@ -1203,8 +745,31 @@ public class NettyClient implements ResetSuperstepMetricsObserver {
    *                        complete
    */
   private void waitSomeRequests(int maxOpenRequests) {
+    // YH: second condition is to avoid print on waitAllRequests() calls,
+    // third condition is hack to ensure current SS >= SS0
+    if (conf.getAsyncConf().printTiming() &&
+        maxOpenRequests != 0 &&
+        BspServiceWorker.getSS0StartTime() != 0) {
+      synchronized (timingLock) {
+        blockedThreads++;
+        if (blockedThreads > GiraphConstants.NUM_COMPUTE_THREADS.get(conf)) {
+          throw new RuntimeException("waitSomeRequests: num blocked " +
+                                     "threads exceeds compute threads!");
+        }
+
+        // We treat worker as blocked only when ALL compute threads are
+        // blocked. Worker returns to running after any thread unblocks.
+        if (blockedThreads == GiraphConstants.NUM_COMPUTE_THREADS.get(conf)) {
+          long elapsedTime = (System.nanoTime() -
+                              BspServiceWorker.getSS0StartTime()) / 1000;
+          LOG.info("[[__TIMING]] " + elapsedTime + " us [ss_block]");
+        }
+      }
+    }
+
     while (clientRequestIdRequestInfoMap.size() > maxOpenRequests) {
       // Wait for requests to complete for some time
+      // TODO-YH: disable logging to reduce overheads for dist locking?
       logInfoAboutOpenRequests(maxOpenRequests);
       synchronized (clientRequestIdRequestInfoMap) {
         if (clientRequestIdRequestInfoMap.size() <= maxOpenRequests) {
@@ -1221,6 +786,24 @@ public class NettyClient implements ResetSuperstepMetricsObserver {
 
       checkRequestsForProblems();
     }
+
+    if (conf.getAsyncConf().printTiming() &&
+        maxOpenRequests != 0 &&
+        BspServiceWorker.getSS0StartTime() != 0) {
+      synchronized (timingLock) {
+        if (blockedThreads == GiraphConstants.NUM_COMPUTE_THREADS.get(conf)) {
+          long elapsedTime = (System.nanoTime() -
+                              BspServiceWorker.getSS0StartTime()) / 1000;
+          LOG.info("[[__TIMING]] " + elapsedTime + " us [ss_block_end]");
+        }
+
+        blockedThreads--;
+        if (blockedThreads < 0) {
+          throw new RuntimeException("waitSomeRequests: num blocked " +
+                                     "threads is negative!");
+        }
+      }
+    }
   }
 
   /**
@@ -1229,55 +812,30 @@ public class NettyClient implements ResetSuperstepMetricsObserver {
    * @param maxOpenRequests Maximum number of requests which can be not complete
    */
   private void logInfoAboutOpenRequests(int maxOpenRequests) {
-    int numOpenRequests = limitOpenRequestsPerWorker ?
-        aggregateOpenRequests.get() :
-        clientRequestIdRequestInfoMap.size();
     if (LOG.isInfoEnabled() && requestLogger.isPrintable()) {
       LOG.info("logInfoAboutOpenRequests: Waiting interval of " +
-          waitingRequestMsecs + " msecs, " + numOpenRequests +
-          " open requests, " + (limitOpenRequestsPerWorker ?
-          (aggregateUnsentRequests.get() + " unsent requests, ") :
-          ("waiting for it to be <= " + maxOpenRequests + ", ")) +
-          inboundByteCounter.getMetrics() + "\n" +
+          waitingRequestMsecs + " msecs, " +
+          clientRequestIdRequestInfoMap.size() +
+          " open requests, waiting for it to be <= " + maxOpenRequests +
+          ", " + inboundByteCounter.getMetrics() + "\n" +
           outboundByteCounter.getMetrics());
 
-      if (numOpenRequests < MAX_REQUESTS_TO_LIST) {
-        if (limitOpenRequestsPerWorker) {
-          for (Pair<AdjustableSemaphore,
-               ConcurrentMap<ClientRequestId, RequestInfo>>
-               pair : perWorkerOpenRequestMap.values()) {
-            for (Map.Entry<ClientRequestId, RequestInfo> request :
-                pair.getRight().entrySet()) {
-              LOG.info("logInfoAboutOpenRequests: Waiting for request " +
-                  request.getKey() + " - " + request.getValue());
-            }
-          }
-        } else {
-          for (Map.Entry<ClientRequestId, RequestInfo> entry :
-              clientRequestIdRequestInfoMap.entrySet()) {
-            LOG.info("logInfoAboutOpenRequests: Waiting for request " +
-                entry.getKey() + " - " + entry.getValue());
-          }
+      if (clientRequestIdRequestInfoMap.size() < MAX_REQUESTS_TO_LIST) {
+        for (Map.Entry<ClientRequestId, RequestInfo> entry :
+            clientRequestIdRequestInfoMap.entrySet()) {
+          LOG.info("logInfoAboutOpenRequests: Waiting for request " +
+              entry.getKey() + " - " + entry.getValue());
         }
       }
 
       // Count how many open requests each task has
       Map<Integer, Integer> openRequestCounts = Maps.newHashMap();
-      if (limitOpenRequestsPerWorker) {
-        for (Map.Entry<Integer, Pair<AdjustableSemaphore,
-             ConcurrentMap<ClientRequestId, RequestInfo>>>
-             entry : perWorkerOpenRequestMap.entrySet()) {
-          openRequestCounts
-              .put(entry.getKey(), entry.getValue().getRight().size());
-        }
-      } else {
-        for (ClientRequestId clientRequestId : clientRequestIdRequestInfoMap
-            .keySet()) {
-          int taskId = clientRequestId.getDestinationTaskId();
-          Integer currentCount = openRequestCounts.get(taskId);
-          openRequestCounts
-              .put(taskId, (currentCount == null ? 0 : currentCount) + 1);
-        }
+      for (ClientRequestId clientRequestId :
+          clientRequestIdRequestInfoMap.keySet()) {
+        int taskId = clientRequestId.getDestinationTaskId();
+        Integer currentCount = openRequestCounts.get(taskId);
+        openRequestCounts.put(taskId,
+            (currentCount == null ? 0 : currentCount) + 1);
       }
       // Sort it in decreasing order of number of open requests
       List<Map.Entry<Integer, Integer>> sorted =
@@ -1321,29 +879,11 @@ public class NettyClient implements ResetSuperstepMetricsObserver {
         System.currentTimeMillis())) {
       return;
     }
-    if (limitOpenRequestsPerWorker) {
-      for (Pair<AdjustableSemaphore, ConcurrentMap<ClientRequestId,
-           RequestInfo>> pair : perWorkerOpenRequestMap.values()) {
-        checkRequestsForProblemsInMap(pair.getRight());
-      }
-    } else {
-      checkRequestsForProblemsInMap(clientRequestIdRequestInfoMap);
-    }
-  }
-
-  /**
-   * Check if there are open requests amongst particular set of requests, which
-   * have been sent a long time ago, and if so, resend them.
-   *
-   * @param requestMap The map of requests we want to check for their problem
-   */
-  private void checkRequestsForProblemsInMap(
-      ConcurrentMap<ClientRequestId, RequestInfo> requestMap) {
     List<ClientRequestId> addedRequestIds = Lists.newArrayList();
     List<RequestInfo> addedRequestInfos = Lists.newArrayList();
     // Check all the requests for problems
     for (Map.Entry<ClientRequestId, RequestInfo> entry :
-        requestMap.entrySet()) {
+        clientRequestIdRequestInfoMap.entrySet()) {
       RequestInfo requestInfo = entry.getValue();
       ChannelFuture writeFuture = requestInfo.getWriteFuture();
       // Request wasn't sent yet
@@ -1375,10 +915,11 @@ public class NettyClient implements ResetSuperstepMetricsObserver {
       ClientRequestId requestId = addedRequestIds.get(i);
       RequestInfo requestInfo = addedRequestInfos.get(i);
 
-      if (requestMap.put(requestId, requestInfo) == null) {
+      if (clientRequestIdRequestInfoMap.put(requestId, requestInfo) ==
+          null) {
         LOG.warn("checkRequestsForProblems: Request " + requestId +
             " completed prior to sending the next request");
-        requestMap.remove(requestId);
+        clientRequestIdRequestInfoMap.remove(requestId);
       }
       InetSocketAddress remoteServer = requestInfo.getDestinationAddress();
       Channel channel = getNextChannel(remoteServer);
@@ -1387,7 +928,6 @@ public class NettyClient implements ResetSuperstepMetricsObserver {
       }
       ChannelFuture writeFuture = channel.write(requestInfo.getRequest());
       requestInfo.setWriteFuture(writeFuture);
-      writeFuture.addListener(logErrorListener);
     }
     addedRequestIds.clear();
     addedRequestInfos.clear();
@@ -1398,16 +938,14 @@ public class NettyClient implements ResetSuperstepMetricsObserver {
    *
    * @param maxResolveAddressAttempts Maximum number of attempts to resolve the
    *        address
-   * @param hostOrIp Known IP or host name
-   * @param port Target port number
+   * @param address The address we are attempting to resolve
    * @return The successfully resolved address.
    * @throws IllegalStateException if the address is not resolved
    *         in <code>maxResolveAddressAttempts</code> tries.
    */
   private static InetSocketAddress resolveAddress(
-      int maxResolveAddressAttempts, String hostOrIp, int port) {
+      int maxResolveAddressAttempts, InetSocketAddress address) {
     int resolveAttempts = 0;
-    InetSocketAddress address = new InetSocketAddress(hostOrIp, port);
     while (address.isUnresolved() &&
         resolveAttempts < maxResolveAddressAttempts) {
       ++resolveAttempts;
@@ -1419,7 +957,7 @@ public class NettyClient implements ResetSuperstepMetricsObserver {
       } catch (InterruptedException e) {
         LOG.warn("resolveAddress: Interrupted.", e);
       }
-      address = new InetSocketAddress(hostOrIp,
+      address = new InetSocketAddress(address.getHostName(),
           address.getPort());
     }
     if (resolveAttempts >= maxResolveAddressAttempts) {
@@ -1427,64 +965,5 @@ public class NettyClient implements ResetSuperstepMetricsObserver {
           "resolve " + address + " in " +  resolveAttempts + " tries.");
     }
     return address;
-  }
-
-  /**
-   * This listener class just dumps exception stack traces if
-   * something happens.
-   */
-  private static class LogOnErrorChannelFutureListener
-      implements ChannelFutureListener {
-
-    @Override
-    public void operationComplete(ChannelFuture future) throws Exception {
-      if (future.isDone() && !future.isSuccess()) {
-        LOG.error("Request failed", future.cause());
-      }
-    }
-  }
-
-  /**
-   * @return Maximum number of open requests for each worker (user-defined
-   *         value)
-   */
-  public short getMaxOpenRequestsPerWorker() {
-    return (short) maxOpenRequestsPerWorker;
-  }
-
-  /**
-   * Implementation of a sempahore where number of available permits can change
-   */
-  private static final class AdjustableSemaphore extends Semaphore {
-    /** Maximum number of available permits */
-    private int maxPermits;
-
-    /**
-     * Constructor
-     * @param permits initial number of available permits
-     */
-    public AdjustableSemaphore(int permits) {
-      super(permits);
-      maxPermits = permits;
-    }
-
-    /**
-     * Adjusts the maximum number of available permits.
-     *
-     * @param newMax max number of permits
-     */
-    public synchronized void setMaxPermits(int newMax) {
-      checkState(newMax >= 0, "setMaxPermits: number of permits cannot be " +
-          "less than 0");
-      int delta = newMax - this.maxPermits;
-      if (delta > 0) {
-        // Releasing semaphore to make room for 'delta' more permits
-        release(delta);
-      } else if (delta < 0) {
-        // Reducing number of permits in the semaphore
-        reducePermits(-delta);
-      }
-      this.maxPermits = newMax;
-    }
   }
 }

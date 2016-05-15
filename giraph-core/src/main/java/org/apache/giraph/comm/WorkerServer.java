@@ -43,15 +43,14 @@ public interface WorkerServer<I extends WritableComparable,
   InetSocketAddress getMyAddress();
 
   /**
-   * Get server host name or IP
-   * @return server host name or IP
-   */
-  String getLocalHostOrIp();
-
-  /**
    * Prepare incoming messages for computation, and resolve mutation requests.
    */
   void prepareSuperstep();
+
+  /**
+   * YH: Finish computation by resolving pending mutation requests. BAP only.
+   */
+  void finishComputation();
 
   /**
    * Get server data

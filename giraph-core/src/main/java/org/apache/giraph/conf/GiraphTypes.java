@@ -17,21 +17,19 @@
  */
 package org.apache.giraph.conf;
 
-import static org.apache.giraph.conf.GiraphConstants.EDGE_VALUE_CLASS;
-import static org.apache.giraph.conf.GiraphConstants.OUTGOING_MESSAGE_VALUE_CLASS;
-import static org.apache.giraph.conf.GiraphConstants.VERTEX_CLASS;
-import static org.apache.giraph.conf.GiraphConstants.VERTEX_ID_CLASS;
-import static org.apache.giraph.conf.GiraphConstants.VERTEX_VALUE_CLASS;
-import static org.apache.giraph.utils.ConfigurationUtils.getTypesHolderClass;
-import static org.apache.giraph.utils.ReflectionUtils.getTypeArguments;
-
-import org.apache.giraph.graph.DefaultVertex;
-import org.apache.giraph.graph.Vertex;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.io.Writable;
 import org.apache.hadoop.io.WritableComparable;
 
 import com.google.common.base.Preconditions;
+
+import static org.apache.giraph.conf.GiraphConstants.EDGE_VALUE_CLASS;
+import static org.apache.giraph.conf.GiraphConstants.INCOMING_MESSAGE_VALUE_CLASS;
+import static org.apache.giraph.conf.GiraphConstants.OUTGOING_MESSAGE_VALUE_CLASS;
+import static org.apache.giraph.conf.GiraphConstants.VERTEX_ID_CLASS;
+import static org.apache.giraph.conf.GiraphConstants.VERTEX_VALUE_CLASS;
+import static org.apache.giraph.utils.ConfigurationUtils.getTypesHolderClass;
+import static org.apache.giraph.utils.ReflectionUtils.getTypeArguments;
 
 /**
  * Holder for the generic types that describe user's graph.
@@ -48,11 +46,10 @@ public class GiraphTypes<I extends WritableComparable, V extends Writable,
   private Class<V> vertexValueClass;
   /** Edge value class */
   private Class<E> edgeValueClass;
+  /** Incoming message value class */
+  private Class<? extends Writable> incomingMessageValueClass;
   /** Outgoing message value class */
   private Class<? extends Writable> outgoingMessageValueClass;
-  /** Vertex implementation class */
-  private Class<? extends Vertex> vertexClass = DefaultVertex.class;
-
 
   /**
    * Empty Constructor
@@ -74,6 +71,7 @@ public class GiraphTypes<I extends WritableComparable, V extends Writable,
       Class<? extends Writable> incomingMessageValueClass,
       Class<? extends Writable> outgoingMessageValueClass) {
     this.edgeValueClass = edgeValueClass;
+    this.incomingMessageValueClass = incomingMessageValueClass;
     this.outgoingMessageValueClass = outgoingMessageValueClass;
     this.vertexIdClass = vertexIdClass;
     this.vertexValueClass = vertexValueClass;
@@ -115,6 +113,7 @@ public class GiraphTypes<I extends WritableComparable, V extends Writable,
     vertexIdClass = (Class<I>) classList[0];
     vertexValueClass = (Class<V>) classList[1];
     edgeValueClass = (Class<E>) classList[2];
+    incomingMessageValueClass = (Class<? extends Writable>) classList[3];
     outgoingMessageValueClass = (Class<? extends Writable>) classList[4];
   }
 
@@ -127,8 +126,8 @@ public class GiraphTypes<I extends WritableComparable, V extends Writable,
     vertexIdClass = (Class<I>) VERTEX_ID_CLASS.get(conf);
     vertexValueClass = (Class<V>) VERTEX_VALUE_CLASS.get(conf);
     edgeValueClass = (Class<E>) EDGE_VALUE_CLASS.get(conf);
+    incomingMessageValueClass = INCOMING_MESSAGE_VALUE_CLASS.get(conf);
     outgoingMessageValueClass = OUTGOING_MESSAGE_VALUE_CLASS.get(conf);
-    vertexClass = VERTEX_CLASS.get(conf);
   }
 
   /**
@@ -140,6 +139,7 @@ public class GiraphTypes<I extends WritableComparable, V extends Writable,
     return vertexIdClass != null &&
         vertexValueClass != null &&
         edgeValueClass != null &&
+        incomingMessageValueClass != null &&
         outgoingMessageValueClass != null;
   }
 
@@ -152,6 +152,7 @@ public class GiraphTypes<I extends WritableComparable, V extends Writable,
     VERTEX_ID_CLASS.set(conf, vertexIdClass);
     VERTEX_VALUE_CLASS.set(conf, vertexValueClass);
     EDGE_VALUE_CLASS.set(conf, edgeValueClass);
+    INCOMING_MESSAGE_VALUE_CLASS.set(conf, incomingMessageValueClass);
     OUTGOING_MESSAGE_VALUE_CLASS.set(conf, outgoingMessageValueClass);
   }
 
@@ -164,6 +165,7 @@ public class GiraphTypes<I extends WritableComparable, V extends Writable,
     VERTEX_ID_CLASS.setIfUnset(conf, vertexIdClass);
     VERTEX_VALUE_CLASS.setIfUnset(conf, vertexValueClass);
     EDGE_VALUE_CLASS.setIfUnset(conf, edgeValueClass);
+    INCOMING_MESSAGE_VALUE_CLASS.setIfUnset(conf, incomingMessageValueClass);
     OUTGOING_MESSAGE_VALUE_CLASS.setIfUnset(conf, outgoingMessageValueClass);
   }
 
@@ -171,7 +173,11 @@ public class GiraphTypes<I extends WritableComparable, V extends Writable,
     return edgeValueClass;
   }
 
-  Class<? extends Writable> getInitialOutgoingMessageValueClass() {
+  public Class<? extends Writable> getIncomingMessageValueClass() {
+    return incomingMessageValueClass;
+  }
+
+  public Class<? extends Writable> getOutgoingMessageValueClass() {
     return outgoingMessageValueClass;
   }
 
@@ -183,12 +189,18 @@ public class GiraphTypes<I extends WritableComparable, V extends Writable,
     return vertexValueClass;
   }
 
-  public Class<? extends Vertex> getVertexClass() {
-    return vertexClass;
-  }
-
   public void setEdgeValueClass(Class<E> edgeValueClass) {
     this.edgeValueClass = edgeValueClass;
+  }
+
+  public void setIncomingMessageValueClass(
+      Class<? extends Writable> incomingMessageValueClass) {
+    this.incomingMessageValueClass = incomingMessageValueClass;
+  }
+
+  public void setOutgoingMessageValueClass(
+      Class<? extends Writable> outgoingMessageValueClass) {
+    this.outgoingMessageValueClass = outgoingMessageValueClass;
   }
 
   public void setVertexIdClass(Class<I> vertexIdClass) {
@@ -197,10 +209,5 @@ public class GiraphTypes<I extends WritableComparable, V extends Writable,
 
   public void setVertexValueClass(Class<V> vertexValueClass) {
     this.vertexValueClass = vertexValueClass;
-  }
-
-  public void setOutgoingMessageValueClass(
-      Class<? extends Writable> outgoingMessageValueClass) {
-    this.outgoingMessageValueClass = outgoingMessageValueClass;
   }
 }

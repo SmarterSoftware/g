@@ -18,15 +18,10 @@
 
 package org.apache.giraph.io;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertTrue;
-
-import java.io.IOException;
-import java.util.Map;
-
+import com.google.common.collect.Maps;
 import org.apache.giraph.BspCase;
 import org.apache.giraph.conf.GiraphConfiguration;
+import org.apache.giraph.conf.ImmutableClassesGiraphConfiguration;
 import org.apache.giraph.edge.ByteArrayEdges;
 import org.apache.giraph.edge.Edge;
 import org.apache.giraph.factories.VertexValueFactory;
@@ -44,7 +39,10 @@ import org.apache.hadoop.io.IntWritable;
 import org.apache.hadoop.io.NullWritable;
 import org.junit.Test;
 
-import com.google.common.collect.Maps;
+import java.io.IOException;
+import java.util.Map;
+
+import static org.junit.Assert.*;
 
 /**
  * A test case to ensure that loading a graph from vertices and edges works as
@@ -350,6 +348,14 @@ public class TestVertexEdgeInput extends BspCase {
 
   public static class TestVertexValueFactory
       implements VertexValueFactory<IntWritable> {
+    @Override
+    public void initialize(ImmutableClassesGiraphConfiguration conf) { }
+
+    @Override
+    public Class<IntWritable> getValueClass() {
+      return IntWritable.class;
+    }
+
     @Override
     public IntWritable newInstance() {
       return new IntWritable(3);

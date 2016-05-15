@@ -18,17 +18,15 @@
 
 package org.apache.giraph.worker;
 
-import java.io.IOException;
-
 import org.apache.giraph.conf.ImmutableClassesGiraphConfiguration;
 import org.apache.giraph.edge.Edge;
 import org.apache.giraph.graph.VertexEdgeCount;
 import org.apache.giraph.io.EdgeInputFormat;
 import org.apache.giraph.io.EdgeReader;
 import org.apache.giraph.io.filters.EdgeInputFilter;
-import org.apache.giraph.io.InputType;
 import org.apache.giraph.utils.LoggerUtils;
 import org.apache.giraph.utils.MemoryUtils;
+import org.apache.giraph.zk.ZooKeeperExt;
 import org.apache.hadoop.io.Writable;
 import org.apache.hadoop.io.WritableComparable;
 import org.apache.hadoop.mapreduce.InputSplit;
@@ -38,6 +36,8 @@ import org.apache.log4j.Logger;
 
 import com.yammer.metrics.core.Counter;
 import com.yammer.metrics.core.Meter;
+
+import java.io.IOException;
 
 /**
  * Load as many edge input splits as possible.
@@ -62,7 +62,7 @@ public class EdgeInputSplitsCallable<I extends WritableComparable,
       EdgeInputSplitsCallable.class);
 
   /** Aggregator handler */
-  private final WorkerThreadGlobalCommUsage globalCommUsage;
+  private final WorkerThreadAggregatorUsage aggregatorUsage;
   /** Bsp service worker (only use thread-safe methods) */
   private final BspServiceWorker<I, V, E> bspServiceWorker;
   /** Edge input format */
@@ -89,20 +89,23 @@ public class EdgeInputSplitsCallable<I extends WritableComparable,
    * @param configuration Configuration
    * @param bspServiceWorker service worker
    * @param splitsHandler Handler for input splits
+   * @param zooKeeperExt Handle to ZooKeeperExt
    */
   public EdgeInputSplitsCallable(
       EdgeInputFormat<I, E> edgeInputFormat,
       Mapper<?, ?, ?, ?>.Context context,
       ImmutableClassesGiraphConfiguration<I, V, E> configuration,
       BspServiceWorker<I, V, E> bspServiceWorker,
-      WorkerInputSplitsHandler splitsHandler)  {
-    super(context, configuration, bspServiceWorker, splitsHandler);
+      InputSplitsHandler splitsHandler,
+      ZooKeeperExt zooKeeperExt)  {
+    super(context, configuration, bspServiceWorker, splitsHandler,
+        zooKeeperExt);
     this.edgeInputFormat = edgeInputFormat;
 
     this.bspServiceWorker = bspServiceWorker;
     inputSplitMaxEdges = configuration.getInputSplitMaxEdges();
     // Initialize aggregator usage.
-    this.globalCommUsage = bspServiceWorker.getAggregatorHandler()
+    this.aggregatorUsage = bspServiceWorker.getAggregatorHandler()
       .newThreadAggregatorUsage();
     edgeInputFilter = configuration.getEdgeInputFilter();
     canEmbedInIds = bspServiceWorker
@@ -121,11 +124,6 @@ public class EdgeInputSplitsCallable<I extends WritableComparable,
   @Override
   public EdgeInputFormat<I, E> getInputFormat() {
     return edgeInputFormat;
-  }
-
-  @Override
-  public InputType getInputType() {
-    return InputType.EDGE;
   }
 
   /**
@@ -149,7 +147,7 @@ public class EdgeInputSplitsCallable<I extends WritableComparable,
 
     edgeReader.initialize(inputSplit, context);
     // Set aggregator usage to edge reader
-    edgeReader.setWorkerGlobalCommUsage(globalCommUsage);
+    edgeReader.setWorkerAggregatorUse(aggregatorUsage);
 
     long inputSplitEdgesLoaded = 0;
     long inputSplitEdgesFiltered = 0;
@@ -228,6 +226,6 @@ public class EdgeInputSplitsCallable<I extends WritableComparable,
         inputSplitEdgesLoaded % EDGES_UPDATE_PERIOD);
     WorkerProgress.get().incrementEdgeInputSplitsLoaded();
 
-    return new VertexEdgeCount(0, inputSplitEdgesLoaded, 0);
+    return new VertexEdgeCount(0, inputSplitEdgesLoaded);
   }
 }

@@ -19,8 +19,6 @@
 package org.apache.giraph.bsp;
 
 import java.util.List;
-
-import org.apache.giraph.job.JobProgressTracker;
 import org.apache.giraph.worker.WorkerInfo;
 import org.apache.hadoop.io.Writable;
 import org.apache.hadoop.io.WritableComparable;
@@ -46,6 +44,19 @@ public interface CentralizedService<I extends WritableComparable,
   long getSuperstep();
 
   /**
+   * YH: Get the worker's current logical superstep.
+   *
+   * When using asynchronous execution with ASYNC_DISABLE_BARRIERS
+   * enabled, this will be a LOCAL superstep counter, not global.
+   *
+   * Otherwise, this is also the global superstep and is guaranteed
+   * to be identical to getSuperstep().
+   *
+   * @return logical superstep (begins at INPUT_SUPERSTEP)
+   */
+  long getLogicalSuperstep();
+
+  /**
    * Get the restarted superstep
    *
    * @return -1 if not manually restarted, otherwise the superstep id
@@ -53,16 +64,18 @@ public interface CentralizedService<I extends WritableComparable,
   long getRestartedSuperstep();
 
   /**
+   * Given a superstep, should it be checkpointed based on the
+   * checkpoint frequency?
+   *
+   * @param superstep superstep to check against frequency
+   * @return true if checkpoint frequency met or superstep is 1.
+   */
+  boolean checkpointFrequencyMet(long superstep);
+
+  /**
    * Get list of workers
    *
    * @return List of workers
    */
   List<WorkerInfo> getWorkerInfoList();
-
-  /**
-   * Get JobProgressTracker to report progress to
-   *
-   * @return JobProgressTrackerClient
-   */
-  JobProgressTracker getJobProgressTracker();
 }

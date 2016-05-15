@@ -52,14 +52,12 @@ public class ImmutableOutputCommitter extends OutputCommitter {
   public void setupTask(TaskAttemptContext context) throws IOException {
   }
 
-/*if[HADOOP_NON_SECURE]
   @Override
+  /*if[HADOOP_NON_SECURE]
   public void cleanupJob(JobContext jobContext) throws IOException {
   }
-
-else[HADOOP_NON_SECURE]*/
-/*end[HADOOP_NON_SECURE]*/
-  @Override
+  else[HADOOP_NON_SECURE]*/
+  /*end[HADOOP_NON_SECURE]*/
   public void commitJob(JobContext jobContext) throws IOException {
   }
 }

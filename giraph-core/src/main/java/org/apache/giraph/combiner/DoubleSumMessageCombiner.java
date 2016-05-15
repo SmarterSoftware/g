@@ -19,19 +19,17 @@
 package org.apache.giraph.combiner;
 
 import org.apache.hadoop.io.DoubleWritable;
-import org.apache.hadoop.io.WritableComparable;
+import org.apache.hadoop.io.LongWritable;
 
 /**
  * A combiner that sums double-valued messages
- *
- * Use SumMessageCombiner.DOUBLE instead.
  */
-@Deprecated()
 public class DoubleSumMessageCombiner
-    implements MessageCombiner<WritableComparable, DoubleWritable> {
+    extends
+    MessageCombiner<LongWritable, DoubleWritable> {
   @Override
-  public void combine(WritableComparable vertexIndex,
-      DoubleWritable originalMessage, DoubleWritable messageToCombine) {
+  public void combine(LongWritable vertexIndex, DoubleWritable originalMessage,
+      DoubleWritable messageToCombine) {
     originalMessage.set(originalMessage.get() + messageToCombine.get());
   }
 

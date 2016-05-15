@@ -36,9 +36,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
 
-import static org.apache.giraph.conf.GiraphConstants
-    .MIN_PARTITIONS_PER_COMPUTE_THREAD;
-import static org.apache.giraph.conf.GiraphConstants.NUM_COMPUTE_THREADS;
 import static org.apache.giraph.conf.GiraphConstants.USER_PARTITION_COUNT;
 
 /**
@@ -118,7 +115,7 @@ public class PartitionUtils {
         workerStatsMap.put(
             workerInfo,
             new VertexEdgeCount(partitionStats.getVertexCount(),
-                partitionStats.getEdgeCount(), 0));
+                partitionStats.getEdgeCount()));
       } else {
         workerStatsMap.put(
             workerInfo,
@@ -174,18 +171,15 @@ public class PartitionUtils {
   /**
    * Compute the number of partitions, based on the configuration.
    *
-   * If USER_PARTITION_COUNT is set, it will follow that, otherwise it will
-   * choose the max of what MIN_PARTITIONS_PER_COMPUTE_THREAD and
-   * PARTITION_COUNT_MULTIPLIER settings would choose, capped by max
-   * partitions limited constrained by zookeeper.
-   *
-   * @param availableWorkerCount Number of available workers
+   * @param availableWorkerInfos Available workers.
+   * @param maxWorkers Maximum number of workers.
    * @param conf Configuration.
    * @return Number of partitions for the job.
    */
-  public static int computePartitionCount(int availableWorkerCount,
+  public static int computePartitionCount(
+      Collection<WorkerInfo> availableWorkerInfos, int maxWorkers,
       ImmutableClassesGiraphConfiguration conf) {
-    if (availableWorkerCount == 0) {
+    if (availableWorkerInfos.isEmpty()) {
       throw new IllegalArgumentException(
           "computePartitionCount: No available workers");
     }
@@ -194,36 +188,32 @@ public class PartitionUtils {
     int partitionCount;
     if (userPartitionCount == USER_PARTITION_COUNT.getDefaultValue()) {
       float multiplier = GiraphConstants.PARTITION_COUNT_MULTIPLIER.get(conf);
-      partitionCount = Math.max(
-          (int) (multiplier * availableWorkerCount * availableWorkerCount), 1);
-      int minPartitionsPerComputeThread =
-          MIN_PARTITIONS_PER_COMPUTE_THREAD.get(conf);
-      int totalComputeThreads =
-          NUM_COMPUTE_THREADS.get(conf) * availableWorkerCount;
-      partitionCount = Math.max(partitionCount,
-          minPartitionsPerComputeThread * totalComputeThreads);
+      partitionCount =
+          Math.max((int) (multiplier * availableWorkerInfos.size() *
+              availableWorkerInfos.size()),
+              1);
     } else {
       partitionCount = userPartitionCount;
     }
     if (LOG.isInfoEnabled()) {
       LOG.info("computePartitionCount: Creating " +
-          partitionCount + " partitions.");
+          partitionCount + ", default would have been " +
+          (availableWorkerInfos.size() *
+              availableWorkerInfos.size()) + " partitions.");
     }
     int maxPartitions = getMaxPartitions(conf);
     if (partitionCount > maxPartitions) {
       // try to keep partitionCount divisible by number of workers
       // in order to keep the balance
-      int reducedPartitions = (maxPartitions / availableWorkerCount) *
-          availableWorkerCount;
+      int reducedPartitions = (maxPartitions / availableWorkerInfos.size()) *
+          availableWorkerInfos.size();
       if (reducedPartitions == 0) {
         reducedPartitions = maxPartitions;
       }
-      if (LOG.isInfoEnabled()) {
-        LOG.info("computePartitionCount: " +
-            "Reducing the partitionCount to " + reducedPartitions +
-            " from " + partitionCount + " because of " + maxPartitions +
-            " limit");
-      }
+      LOG.warn("computePartitionCount: " +
+          "Reducing the partitionCount to " + reducedPartitions +
+          " from " + partitionCount + " because of " + maxPartitions +
+          " limit");
       partitionCount = reducedPartitions;
     }
 

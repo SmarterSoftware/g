@@ -18,19 +18,12 @@
 
 package org.apache.giraph.master;
 
-import java.util.List;
-
 import org.apache.giraph.aggregators.Aggregator;
-import org.apache.giraph.bsp.CentralizedServiceMaster;
 import org.apache.giraph.combiner.MessageCombiner;
 import org.apache.giraph.conf.DefaultImmutableClassesGiraphConfigurable;
-import org.apache.giraph.conf.MessageClasses;
 import org.apache.giraph.graph.Computation;
 import org.apache.giraph.graph.GraphState;
-import org.apache.giraph.reducers.ReduceOperation;
-import org.apache.giraph.worker.WorkerInfo;
 import org.apache.hadoop.io.Writable;
-import org.apache.hadoop.io.WritableComparable;
 import org.apache.hadoop.mapreduce.Mapper;
 
 /**
@@ -48,11 +41,11 @@ import org.apache.hadoop.mapreduce.Mapper;
  */
 public abstract class MasterCompute
     extends DefaultImmutableClassesGiraphConfigurable
-    implements MasterAggregatorUsage, MasterGlobalCommUsage, Writable {
+    implements MasterAggregatorUsage, Writable {
   /** If true, do not do anymore computation on this vertex. */
   private boolean halt = false;
   /** Master aggregator usage */
-  private CentralizedServiceMaster serviceMaster;
+  private MasterAggregatorUsage masterAggregatorUsage;
   /** Graph state */
   private GraphState graphState;
   /**
@@ -72,6 +65,18 @@ public abstract class MasterCompute
    */
   public abstract void initialize() throws InstantiationException,
     IllegalAccessException;
+
+  /**
+   * YH: Notify that the next global superstep (to come after master.compute())
+   * will have a different computation phase from the previous superstep.
+   *
+   * TODO-YH: remove for BAP, this is only for AP
+   */
+  public final void notifyNewPhase() {
+    // this works correctly, b/c "this" is an instance of
+    // ImmutableClassesGiraphConfigurable (see configureIfPossible)
+    getConf().getAsyncConf().setNewPhase(true);
+  }
 
   /**
    * Retrieves the current superstep.
@@ -129,15 +134,6 @@ public abstract class MasterCompute
   }
 
   /**
-   * Get list of workers
-   *
-   * @return List of workers
-   */
-  public final List<WorkerInfo> getWorkerInfoList() {
-    return serviceMaster.getWorkerInfoList();
-  }
-
-  /**
    * Set Computation class to be used
    *
    * @param computationClass Computation class
@@ -187,10 +183,8 @@ public abstract class MasterCompute
 
   /**
    * Set incoming message class to be used
-   *
    * @param incomingMessageClass incoming message class
    */
-  @Deprecated
   public final void setIncomingMessage(
       Class<? extends Writable> incomingMessageClass) {
     superstepClasses.setIncomingMessageClass(incomingMessageClass);
@@ -198,7 +192,6 @@ public abstract class MasterCompute
 
   /**
    * Set outgoing message class to be used
-   *
    * @param outgoingMessageClass outgoing message class
    */
   public final void setOutgoingMessage(
@@ -206,46 +199,11 @@ public abstract class MasterCompute
     superstepClasses.setOutgoingMessageClass(outgoingMessageClass);
   }
 
-  /**
-   * Set outgoing message classes to be used
-   *
-   * @param outgoingMessageClasses outgoing message classes
-   */
-  public void setOutgoingMessageClasses(
-      MessageClasses<? extends WritableComparable, ? extends Writable>
-        outgoingMessageClasses) {
-    superstepClasses.setOutgoingMessageClasses(outgoingMessageClasses);
-  }
-
-  @Override
-  public final <S, R extends Writable> void registerReducer(
-      String name, ReduceOperation<S, R> reduceOp) {
-    serviceMaster.getGlobalCommHandler().registerReducer(name, reduceOp);
-  }
-
-  @Override
-  public final <S, R extends Writable> void registerReducer(
-      String name, ReduceOperation<S, R> reduceOp, R globalInitialValue) {
-    serviceMaster.getGlobalCommHandler().registerReducer(
-        name, reduceOp, globalInitialValue);
-  }
-
-  @Override
-  public final <T extends Writable> T getReduced(String name) {
-    return serviceMaster.getGlobalCommHandler().getReduced(name);
-  }
-
-  @Override
-  public final void broadcast(String name, Writable object) {
-    serviceMaster.getGlobalCommHandler().broadcast(name, object);
-  }
-
   @Override
   public final <A extends Writable> boolean registerAggregator(
     String name, Class<? extends Aggregator<A>> aggregatorClass)
     throws InstantiationException, IllegalAccessException {
-    return serviceMaster.getAggregatorTranslationHandler().registerAggregator(
-        name, aggregatorClass);
+    return masterAggregatorUsage.registerAggregator(name, aggregatorClass);
   }
 
   @Override
@@ -253,42 +211,31 @@ public abstract class MasterCompute
       String name,
       Class<? extends Aggregator<A>> aggregatorClass) throws
       InstantiationException, IllegalAccessException {
-    return serviceMaster.getAggregatorTranslationHandler()
-        .registerPersistentAggregator(name, aggregatorClass);
+    return masterAggregatorUsage.registerPersistentAggregator(
+        name, aggregatorClass);
   }
 
   @Override
   public final <A extends Writable> A getAggregatedValue(String name) {
-    return serviceMaster.getAggregatorTranslationHandler()
-        .<A>getAggregatedValue(name);
+    return masterAggregatorUsage.<A>getAggregatedValue(name);
   }
 
   @Override
   public final <A extends Writable> void setAggregatedValue(
       String name, A value) {
-    serviceMaster.getAggregatorTranslationHandler()
-        .setAggregatedValue(name, value);
+    masterAggregatorUsage.setAggregatedValue(name, value);
   }
 
-  /**
-   * Call this to log a line to command line of the job. Use in moderation -
-   * it's a synchronous call to Job client
-   *
-   * @param line Line to print
-   */
-  public void logToCommandLine(String line) {
-    serviceMaster.getJobProgressTracker().logInfo(line);
-  }
-
-  public final void setGraphState(GraphState graphState) {
+  final void setGraphState(GraphState graphState) {
     this.graphState = graphState;
   }
 
-  public final void setMasterService(CentralizedServiceMaster serviceMaster) {
-    this.serviceMaster = serviceMaster;
+  final void setMasterAggregatorUsage(MasterAggregatorUsage
+      masterAggregatorUsage) {
+    this.masterAggregatorUsage = masterAggregatorUsage;
   }
 
-  public final void setSuperstepClasses(SuperstepClasses superstepClasses) {
+  final void setSuperstepClasses(SuperstepClasses superstepClasses) {
     this.superstepClasses = superstepClasses;
   }
 }

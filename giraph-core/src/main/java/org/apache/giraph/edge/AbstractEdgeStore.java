@@ -26,7 +26,6 @@ import org.apache.giraph.graph.Vertex;
 import org.apache.giraph.partition.Partition;
 import org.apache.giraph.utils.CallableFactory;
 import org.apache.giraph.utils.ProgressableUtils;
-import org.apache.giraph.utils.Trimmable;
 import org.apache.giraph.utils.VertexIdEdgeIterator;
 import org.apache.giraph.utils.VertexIdEdges;
 import org.apache.hadoop.io.Writable;
@@ -34,15 +33,12 @@ import org.apache.hadoop.io.WritableComparable;
 import org.apache.hadoop.util.Progressable;
 import org.apache.log4j.Logger;
 
-import java.io.DataInput;
-import java.io.DataOutput;
-import java.io.IOException;
 import java.util.Iterator;
 import java.util.Map;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ConcurrentMap;
-
-import static com.google.common.base.Preconditions.checkState;
 
 /**
  * Basic implementation of edges store, extended this to easily define simple
@@ -125,29 +121,14 @@ public abstract class AbstractEdgeStore<I extends WritableComparable,
   protected abstract Map<K, OutEdges<I, E>> getPartitionEdges(int partitionId);
 
   /**
-   * Return the OutEdges for a given partition
+   * Remove and return the OutEdges for a given partition
    *
    * @param entry for vertexId key
+   * @param partitionEdges map of out-edges for vertices in a partition
    * @return out edges
    */
-  protected abstract OutEdges<I, E> getPartitionEdges(Et entry);
-
-  /**
-   * Writes the given key to the output
-   *
-   * @param key input key to be written
-   * @param output output to write the key to
-   */
-  protected abstract void writeVertexKey(K key, DataOutput output)
-  throws IOException;
-
-  /**
-   * Reads the given key from the input
-   *
-   * @param input input to read the key from
-   * @return Key read from the input
-   */
-  protected abstract K readVertexKey(DataInput input) throws IOException;
+  protected abstract OutEdges<I, E> removePartitionEdges(Et entry,
+    Map<K, OutEdges<I, E>> partitionEdges);
 
   /**
    * Get iterator for partition edges
@@ -157,40 +138,6 @@ public abstract class AbstractEdgeStore<I extends WritableComparable,
    */
   protected abstract Iterator<Et>
   getPartitionEdgesIterator(Map<K, OutEdges<I, E>> partitionEdges);
-
-  @Override
-  public boolean hasEdgesForPartition(int partitionId) {
-    return transientEdges.containsKey(partitionId);
-  }
-
-  @Override
-  public void writePartitionEdgeStore(int partitionId, DataOutput output)
-      throws IOException {
-    Map<K, OutEdges<I, E>> edges = transientEdges.remove(partitionId);
-    if (edges != null) {
-      output.writeInt(edges.size());
-      for (Map.Entry<K, OutEdges<I, E>> edge : edges.entrySet()) {
-        writeVertexKey(edge.getKey(), output);
-        edge.getValue().write(output);
-      }
-    }
-  }
-
-  @Override
-  public void readPartitionEdgeStore(int partitionId, DataInput input)
-      throws IOException {
-    checkState(!transientEdges.containsKey(partitionId),
-        "readPartitionEdgeStore: reading a partition that is already there in" +
-            " the partition store (impossible)");
-    Map<K, OutEdges<I, E>> partitionEdges = getPartitionEdges(partitionId);
-    int numEntries = input.readInt();
-    for (int i = 0; i < numEntries; ++i) {
-      K vertexKey = readVertexKey(input);
-      OutEdges<I, E> edges = configuration.createAndInitializeInputOutEdges();
-      edges.readFields(input);
-      partitionEdges.put(vertexKey, edges);
-    }
-  }
 
   /**
    * Get out-edges for a given vertex
@@ -253,7 +200,9 @@ public abstract class AbstractEdgeStore<I extends WritableComparable,
       LOG.info("moveEdgesToVertices: Moving incoming edges to vertices.");
     }
 
-    service.getPartitionStore().startIteration();
+    final BlockingQueue<Integer> partitionIdQueue =
+        new ArrayBlockingQueue<>(transientEdges.size());
+    partitionIdQueue.addAll(transientEdges.keySet());
     int numThreads = configuration.getNumInputSplitsThreads();
 
     CallableFactory<Void> callableFactory = new CallableFactory<Void>() {
@@ -264,27 +213,20 @@ public abstract class AbstractEdgeStore<I extends WritableComparable,
           public Void call() throws Exception {
             Integer partitionId;
             I representativeVertexId = configuration.createVertexId();
-            while (true) {
+            while ((partitionId = partitionIdQueue.poll()) != null) {
               Partition<I, V, E> partition =
-                  service.getPartitionStore().getNextPartition();
-              if (partition == null) {
-                break;
-              }
+                  service.getPartitionStore().getOrCreatePartition(partitionId);
               Map<K, OutEdges<I, E>> partitionEdges =
-                  transientEdges.remove(partition.getId());
-              if (partitionEdges == null) {
-                service.getPartitionStore().putPartition(partition);
-                continue;
-              }
-
+                  transientEdges.remove(partitionId);
               Iterator<Et> iterator =
                   getPartitionEdgesIterator(partitionEdges);
               // process all vertices in given partition
               while (iterator.hasNext()) {
                 Et entry = iterator.next();
-                I vertexId = getVertexId(entry, representativeVertexId);
+                I vertexId = getVertexId(entry,
+                    representativeVertexId);
                 OutEdges<I, E> outEdges = convertInputToComputeEdges(
-                  getPartitionEdges(entry));
+                    removePartitionEdges(entry, partitionEdges));
                 Vertex<I, V, E> vertex = partition.getVertex(vertexId);
                 // If the source vertex doesn't exist, create it. Otherwise,
                 // just set the edges.
@@ -306,14 +248,10 @@ public abstract class AbstractEdgeStore<I extends WritableComparable,
                       vertex.addEdge(edge);
                     }
                   }
-                  if (vertex instanceof Trimmable) {
-                    ((Trimmable) vertex).trim();
-                  }
                   // Some Partition implementations (e.g. ByteArrayPartition)
                   // require us to put back the vertex after modifying it.
                   partition.saveVertex(vertex);
                 }
-                iterator.remove();
               }
               // Some PartitionStore implementations
               // (e.g. DiskBackedPartitionStore) require us to put back the

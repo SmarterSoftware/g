@@ -76,7 +76,7 @@ public class BigDataInput implements ExtendedDataInput {
    * next one if needed.
    */
   private void checkIfShouldMoveToNextDataInput() {
-    if (currentInput.endOfInput()) {
+    if (currentInput.available() == 0) {
       moveToNextDataInput();
     }
   }
@@ -168,17 +168,12 @@ public class BigDataInput implements ExtendedDataInput {
   @Override
   public int skipBytes(int n) throws IOException {
     int bytesLeftToSkip = n;
-    while (bytesLeftToSkip > 0) {
-      int bytesSkipped = currentInput.skipBytes(bytesLeftToSkip);
-      bytesLeftToSkip -= bytesSkipped;
-      if (bytesLeftToSkip > 0) {
-        moveToNextDataInput();
-        if (endOfInput()) {
-          break;
-        }
-      }
+    while (bytesLeftToSkip >= currentInput.available()) {
+      bytesLeftToSkip -= currentInput.available();
+      moveToNextDataInput();
     }
-    return n - bytesLeftToSkip;
+    int bytesSkipped = currentInput.skipBytes(bytesLeftToSkip);
+    return n - bytesLeftToSkip + bytesSkipped;
   }
 
   @Override
@@ -192,14 +187,10 @@ public class BigDataInput implements ExtendedDataInput {
 
   @Override
   public int available() {
-    throw new UnsupportedOperationException("available: " +
-        "Not supported with BigDataIO because overflow can happen");
-  }
-
-  @Override
-  public boolean endOfInput() {
-    return currentInput == EMPTY_INPUT ||
-        (dataInputs.get(currentPositionInInputs).endOfInput() &&
-            currentPositionInInputs == dataInputs.size() - 1);
+    int available = 0;
+    for (int i = currentPositionInInputs; i < dataInputs.size(); i++) {
+      available += dataInputs.get(i).available();
+    }
+    return available;
   }
 }

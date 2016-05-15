@@ -18,20 +18,19 @@
 
 package org.apache.giraph.graph;
 
-import java.io.IOException;
-import java.util.Iterator;
-
-import org.apache.giraph.bsp.CentralizedServiceWorker;
 import org.apache.giraph.comm.WorkerClientRequestProcessor;
+import org.apache.giraph.conf.DefaultImmutableClassesGiraphConfigurable;
 import org.apache.giraph.edge.Edge;
 import org.apache.giraph.edge.OutEdges;
-import org.apache.giraph.worker.AllWorkersInfo;
-import org.apache.giraph.worker.WorkerAggregatorDelegator;
+import org.apache.giraph.worker.WorkerAggregatorUsage;
 import org.apache.giraph.worker.WorkerContext;
-import org.apache.giraph.worker.WorkerGlobalCommUsage;
 import org.apache.hadoop.io.Writable;
 import org.apache.hadoop.io.WritableComparable;
 import org.apache.hadoop.mapreduce.Mapper;
+import org.apache.log4j.Logger;
+
+import java.io.IOException;
+import java.util.Iterator;
 
 /**
  * See {@link Computation} for explanation of the interface.
@@ -53,18 +52,23 @@ import org.apache.hadoop.mapreduce.Mapper;
 public abstract class AbstractComputation<I extends WritableComparable,
     V extends Writable, E extends Writable, M1 extends Writable,
     M2 extends Writable>
-    extends WorkerAggregatorDelegator<I, V, E>
+    extends DefaultImmutableClassesGiraphConfigurable<I, V, E>
     implements Computation<I, V, E, M1, M2> {
+  /** Logger */
+  private static final Logger LOG = Logger.getLogger(AbstractComputation.class);
+
   /** Global graph state **/
   private GraphState graphState;
   /** Handles requests */
   private WorkerClientRequestProcessor<I, V, E> workerClientRequestProcessor;
-  /** Service worker */
-  private CentralizedServiceWorker<I, V, E> serviceWorker;
+  /** Graph-wide BSP Mapper for this Computation */
+  private GraphTaskManager<I, V, E> graphTaskManager;
+  /** Worker aggregator usage */
+  private WorkerAggregatorUsage workerAggregatorUsage;
   /** Worker context */
   private WorkerContext workerContext;
-  /** All workers info */
-  private AllWorkersInfo allWorkersInfo;
+  /** Current source id for sent messages */
+  private I srcId;
 
   /**
    * Must be defined by user to do computation on a single Vertex.
@@ -74,7 +78,6 @@ public abstract class AbstractComputation<I extends WritableComparable,
    *                 superstep.  Each message is only guaranteed to have
    *                 a life expectancy as long as next() is not called.
    */
-  @Override
   public abstract void compute(Vertex<I, V, E> vertex,
       Iterable<M1> messages) throws IOException;
 
@@ -102,37 +105,52 @@ public abstract class AbstractComputation<I extends WritableComparable,
    * @param graphState Graph state
    * @param workerClientRequestProcessor Processor for handling requests
    * @param graphTaskManager Graph-wide BSP Mapper for this Vertex
-   * @param workerGlobalCommUsage Worker global communication usage
+   * @param workerAggregatorUsage Worker aggregator usage
    * @param workerContext Worker context
    */
   @Override
   public void initialize(
       GraphState graphState,
       WorkerClientRequestProcessor<I, V, E> workerClientRequestProcessor,
-      CentralizedServiceWorker<I, V, E> serviceWorker,
-      WorkerGlobalCommUsage workerGlobalCommUsage) {
+      GraphTaskManager<I, V, E> graphTaskManager,
+      WorkerAggregatorUsage workerAggregatorUsage,
+      WorkerContext workerContext) {
     this.graphState = graphState;
     this.workerClientRequestProcessor = workerClientRequestProcessor;
-    this.setWorkerGlobalCommUsage(workerGlobalCommUsage);
-    this.serviceWorker = serviceWorker;
-    if (serviceWorker != null) {
-      this.workerContext = serviceWorker.getWorkerContext();
-      this.allWorkersInfo = new AllWorkersInfo(
-          serviceWorker.getWorkerInfoList(), serviceWorker.getWorkerInfo());
-    } else {
-      this.workerContext = null;
-      this.allWorkersInfo = null;
-    }
+    this.graphTaskManager = graphTaskManager;
+    this.workerAggregatorUsage = workerAggregatorUsage;
+    this.workerContext = workerContext;
+    this.srcId = null;
   }
 
   /**
-   * Retrieves the current superstep.
+   * Retrieves the current (global) superstep.
    *
-   * @return Current superstep
+   * YH: This is always the number of global supersteps---i.e., supersteps
+   * separated by global barriers. This differs from getLogicalSuperstep()
+   * only with asynchronous execution and ASYNC_DISABLE_BARRIERS enabled.
+   * Otherwise it is identical to getLogicalSuperstep().
+   *
+   * @return Current (global) superstep
    */
   @Override
   public long getSuperstep() {
     return graphState.getSuperstep();
+  }
+
+  /**
+   * YH: Retrieves the current logical superstep.
+   *
+   * If using asynchronous execution with ASYNC_DISABLE_BARRIERS enabled,
+   * this will be the LOCAL superstep counter for this worker, which CAN
+   * differ from other workers---even if they are in the same global superstep.
+   * Otherwise, this is the regular global superstep (same for all workers).
+   *
+   * @return Current logical superstep
+   */
+  @Override
+  public long getLogicalSuperstep() {
+    return graphState.getLogicalSuperstep();
   }
 
   /**
@@ -158,6 +176,33 @@ public abstract class AbstractComputation<I extends WritableComparable,
   }
 
   /**
+   * YH: Set the source vertex id for all messages that will be sent.
+   * By default, this is the current vertex being processed, or null
+   * if no vertex is currently being processed.
+   *
+   * Shouldn't be called by user code, UNLESS the current vertex being
+   * processed is not the source of messages to be sent. In that case,
+   * use this to set the correct source id before calling sendMessage*().
+   *
+   * @param id Id of vertex that will be sending messages.
+   */
+  @Override
+  public void setCurrentSourceId(I id) {
+    this.srcId = id;
+  }
+
+  /**
+   * YH: Flag all subsequent messages as being either for the current
+   * phase (false) or for the next phase (true).
+   *
+   * @param forNextPhase True if message should be processed in next phase.
+   */
+  @Override
+  public void setMessagesAreForNextPhase(boolean forNextPhase) {
+    workerClientRequestProcessor.setForNextPhase(forNextPhase);
+  }
+
+  /**
    * Send a message to a vertex id.
    *
    * @param id Vertex id to send the message to
@@ -165,7 +210,7 @@ public abstract class AbstractComputation<I extends WritableComparable,
    */
   @Override
   public void sendMessage(I id, M2 message) {
-    workerClientRequestProcessor.sendMessageRequest(id, message);
+    workerClientRequestProcessor.sendMessageRequest(srcId, id, message);
   }
 
   /**
@@ -176,7 +221,8 @@ public abstract class AbstractComputation<I extends WritableComparable,
    */
   @Override
   public void sendMessageToAllEdges(Vertex<I, V, E> vertex, M2 message) {
-    workerClientRequestProcessor.sendMessageToAllRequest(vertex, message);
+    workerClientRequestProcessor.sendMessageToAllRequest(
+        srcId, vertex, message);
   }
 
   /**
@@ -189,7 +235,7 @@ public abstract class AbstractComputation<I extends WritableComparable,
   public void sendMessageToMultipleEdges(
       Iterator<I> vertexIdIterator, M2 message) {
     workerClientRequestProcessor.sendMessageToAllRequest(
-        vertexIdIterator, message);
+        srcId, vertexIdIterator, message);
   }
 
   /**
@@ -281,18 +327,12 @@ public abstract class AbstractComputation<I extends WritableComparable,
   }
 
   @Override
-  public final int getWorkerCount() {
-    return allWorkersInfo.getWorkerCount();
+  public <A extends Writable> void aggregate(String name, A value) {
+    workerAggregatorUsage.aggregate(name, value);
   }
 
   @Override
-  public final int getMyWorkerIndex() {
-    return allWorkersInfo.getMyWorkerIndex();
-  }
-
-  @Override
-  public final int getWorkerForVertex(I vertexId) {
-    return allWorkersInfo.getWorkerIndex(
-        serviceWorker.getVertexPartitionOwner(vertexId).getWorkerInfo());
+  public <A extends Writable> A getAggregatedValue(String name) {
+    return workerAggregatorUsage.<A>getAggregatedValue(name);
   }
 }

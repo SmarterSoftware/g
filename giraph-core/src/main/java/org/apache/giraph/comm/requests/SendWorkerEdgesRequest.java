@@ -69,9 +69,14 @@ public class SendWorkerEdgesRequest<I extends WritableComparable,
         iterator = partitionVertexData.getIterator();
     while (iterator.hasNext()) {
       iterator.next();
-      serverData.getEdgeStore()
-          .addPartitionEdges(iterator.getCurrentFirst(),
+      serverData.getEdgeStore().
+          addPartitionEdges(iterator.getCurrentFirst(),
               iterator.getCurrentSecond());
     }
+  }
+
+  @Override
+  public void doLocalRequest(ServerData serverData) {
+    doRequest(serverData);  // YH: dummy wrapper
   }
 }

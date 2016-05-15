@@ -29,8 +29,14 @@ import org.apache.hadoop.io.WritableComparable;
  * @param <E> Edge data
  */
 public interface ImmutableClassesGiraphConfigurable<
-    I extends WritableComparable, V extends Writable, E extends Writable>
-    extends GiraphConfigurationSettable<I, V, E> {
+    I extends WritableComparable, V extends Writable, E extends Writable> {
+  /**
+   * Set the configuration to be used by this object.
+   *
+   * @param configuration Set configuration
+   */
+  void setConf(ImmutableClassesGiraphConfiguration<I, V, E> configuration);
+
   /**
    * Return the configuration used by this object.
    *

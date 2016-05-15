@@ -18,7 +18,33 @@
 
 package org.apache.giraph.comm;
 
-import static org.junit.Assert.assertTrue;
+import com.google.common.collect.Iterables;
+import com.google.common.collect.Lists;
+import com.google.common.collect.Sets;
+import com.google.common.io.Files;
+import org.apache.commons.io.FileUtils;
+import org.apache.giraph.bsp.CentralizedServiceWorker;
+import org.apache.giraph.comm.messages.ByteArrayMessagesPerVertexStore;
+import org.apache.giraph.comm.messages.out_of_core.DiskBackedMessageStore;
+import org.apache.giraph.comm.messages.MessageStore;
+import org.apache.giraph.comm.messages.MessageStoreFactory;
+import org.apache.giraph.comm.messages.out_of_core.PartitionDiskBackedMessageStore;
+import org.apache.giraph.comm.messages.out_of_core.SequentialFileMessageStore;
+import org.apache.giraph.conf.GiraphConfiguration;
+import org.apache.giraph.conf.GiraphConstants;
+import org.apache.giraph.conf.ImmutableClassesGiraphConfiguration;
+import org.apache.giraph.factories.TestMessageValueFactory;
+import org.apache.giraph.utils.ByteArrayVertexIdMessages;
+import org.apache.giraph.utils.CollectionUtils;
+import org.apache.giraph.utils.IntNoOpComputation;
+import org.apache.giraph.utils.MockUtils;
+import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.io.IntWritable;
+import org.apache.hadoop.io.Writable;
+import org.apache.hadoop.io.WritableComparable;
+import org.junit.After;
+import org.junit.Before;
+import org.junit.Test;
 
 import java.io.BufferedInputStream;
 import java.io.BufferedOutputStream;
@@ -36,37 +62,7 @@ import java.util.SortedMap;
 import java.util.TreeMap;
 import java.util.TreeSet;
 
-import org.apache.commons.io.FileUtils;
-import org.apache.giraph.bsp.CentralizedServiceWorker;
-import org.apache.giraph.comm.messages.ByteArrayMessagesPerVertexStore;
-import org.apache.giraph.comm.messages.MessageEncodeAndStoreType;
-import org.apache.giraph.comm.messages.MessageStore;
-import org.apache.giraph.comm.messages.MessageStoreFactory;
-import org.apache.giraph.comm.messages.out_of_core.DiskBackedMessageStore;
-import org.apache.giraph.comm.messages.out_of_core.PartitionDiskBackedMessageStore;
-import org.apache.giraph.comm.messages.out_of_core.SequentialFileMessageStore;
-import org.apache.giraph.conf.DefaultMessageClasses;
-import org.apache.giraph.conf.GiraphConfiguration;
-import org.apache.giraph.conf.GiraphConstants;
-import org.apache.giraph.conf.ImmutableClassesGiraphConfiguration;
-import org.apache.giraph.factories.DefaultMessageValueFactory;
-import org.apache.giraph.factories.TestMessageValueFactory;
-import org.apache.giraph.utils.ByteArrayVertexIdMessages;
-import org.apache.giraph.utils.CollectionUtils;
-import org.apache.giraph.utils.IntNoOpComputation;
-import org.apache.giraph.utils.MockUtils;
-import org.apache.hadoop.conf.Configuration;
-import org.apache.hadoop.io.IntWritable;
-import org.apache.hadoop.io.Writable;
-import org.apache.hadoop.io.WritableComparable;
-import org.junit.After;
-import org.junit.Before;
-import org.junit.Test;
-
-import com.google.common.collect.Iterables;
-import com.google.common.collect.Lists;
-import com.google.common.collect.Sets;
-import com.google.common.io.Files;
+import static org.junit.Assert.assertTrue;
 
 /** Test for different types of message stores */
 public class TestMessageStores {
@@ -224,12 +220,7 @@ public class TestMessageStores {
     }
     out.close();
 
-    messageStore = (S) messageStoreFactory.newStore(
-        new DefaultMessageClasses(
-            IntWritable.class,
-            DefaultMessageValueFactory.class,
-            null,
-            MessageEncodeAndStoreType.BYTEARRAY_PER_PARTITION));
+    messageStore = messageStoreFactory.newStore(new TestMessageValueFactory<IntWritable>(IntWritable.class));
 
     DataInputStream in = new DataInputStream(new BufferedInputStream(
         (new FileInputStream(file))));
@@ -249,12 +240,7 @@ public class TestMessageStores {
       TestData testData) throws IOException {
     SortedMap<IntWritable, Collection<IntWritable>> messages =
         new TreeMap<IntWritable, Collection<IntWritable>>();
-    S messageStore = (S) messageStoreFactory.newStore(
-        new DefaultMessageClasses(
-            IntWritable.class,
-            DefaultMessageValueFactory.class,
-            null,
-            MessageEncodeAndStoreType.BYTEARRAY_PER_PARTITION));
+    S messageStore = messageStoreFactory.newStore(new TestMessageValueFactory<IntWritable>(IntWritable.class));
     putNTimes(messageStore, messages, testData);
     assertTrue(equalMessages(messageStore, messages, testData));
     messageStore.clearAll();

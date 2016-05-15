@@ -18,9 +18,10 @@
 
 package org.apache.giraph.comm.netty.handler;
 
-import org.apache.giraph.comm.netty.NettyClient;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.log4j.Logger;
+
+import java.util.concurrent.ConcurrentMap;
 
 import io.netty.buffer.ByteBuf;
 import io.netty.channel.ChannelHandlerContext;
@@ -40,16 +41,22 @@ public class ResponseClientHandler extends ChannelInboundHandlerAdapter {
   private static volatile boolean ALREADY_DROPPED_FIRST_RESPONSE = false;
   /** Drop first response (used for simulating failure) */
   private final boolean dropFirstResponse;
-  /** Netty client that does the actual I/O and keeps track of open requests */
-  private final NettyClient nettyClient;
+  /** Outstanding worker request map */
+  private final ConcurrentMap<ClientRequestId,
+      RequestInfo> workerIdOutstandingRequestMap;
 
   /**
    * Constructor.
-   * @param nettyClient Client that does the actual I/O
+   *
+   * @param workerIdOutstandingRequestMap Map of worker ids to outstanding
+   *                                      requests
    * @param conf Configuration
    */
-  public ResponseClientHandler(NettyClient nettyClient, Configuration conf) {
-    this.nettyClient = nettyClient;
+  public ResponseClientHandler(
+      ConcurrentMap<ClientRequestId, RequestInfo>
+          workerIdOutstandingRequestMap,
+      Configuration conf) {
+    this.workerIdOutstandingRequestMap = workerIdOutstandingRequestMap;
     dropFirstResponse = NETTY_SIMULATE_FIRST_RESPONSE_FAILED.get(conf);
   }
 
@@ -57,34 +64,61 @@ public class ResponseClientHandler extends ChannelInboundHandlerAdapter {
   public void channelRead(ChannelHandlerContext ctx, Object msg)
     throws Exception {
     if (!(msg instanceof ByteBuf)) {
-      throw new IllegalStateException("channelRead: Got a " +
+      throw new IllegalStateException("messageReceived: Got a " +
           "non-ByteBuf message " + msg);
     }
 
     ByteBuf buf = (ByteBuf) msg;
     int senderId = -1;
     long requestId = -1;
-    short response = -1;
+    int response = -1;
     try {
       senderId = buf.readInt();
       requestId = buf.readLong();
-      response = buf.readShort();
+      response = buf.readByte();
     } catch (IndexOutOfBoundsException e) {
       throw new IllegalStateException(
           "channelRead: Got IndexOutOfBoundsException ", e);
     }
     ReferenceCountUtil.release(buf);
 
-    boolean shouldDrop = false;
+
     // Simulate a failed response on the first response (if desired)
     if (dropFirstResponse && !ALREADY_DROPPED_FIRST_RESPONSE) {
-      LOG.info("channelRead: Simulating dropped response " + response +
+      LOG.info("messageReceived: Simulating dropped response " + response +
           " for request " + requestId);
       setAlreadyDroppedFirstResponse();
-      shouldDrop = true;
+      synchronized (workerIdOutstandingRequestMap) {
+        workerIdOutstandingRequestMap.notifyAll();
+      }
+      return;
     }
 
-    nettyClient.messageReceived(senderId, requestId, response, shouldDrop);
+    if (response == 1) {
+      LOG.info("messageReceived: Already completed request (taskId = " +
+          senderId + ", requestId = " + requestId + ")");
+    } else if (response != 0) {
+      throw new IllegalStateException(
+          "messageReceived: Got illegal response " + response);
+    }
+
+    RequestInfo requestInfo = workerIdOutstandingRequestMap.remove(
+        new ClientRequestId(senderId, requestId));
+    if (requestInfo == null) {
+      LOG.info("messageReceived: Already received response for (taskId = " +
+          senderId + ", requestId = " + requestId + ")");
+    } else {
+      if (LOG.isDebugEnabled()) {
+        LOG.debug("messageReceived: Completed (taskId = " + senderId + ")" +
+            requestInfo + ".  Waiting on " + workerIdOutstandingRequestMap
+            .size() + " requests");
+      }
+    }
+
+    // Help NettyClient#waitSomeRequests() to finish faster
+    synchronized (workerIdOutstandingRequestMap) {
+      workerIdOutstandingRequestMap.notifyAll();
+    }
   }
 
   /**

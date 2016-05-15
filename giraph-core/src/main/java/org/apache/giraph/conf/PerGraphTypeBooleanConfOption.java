@@ -30,6 +30,8 @@ public class PerGraphTypeBooleanConfOption {
   private final BooleanConfOption vertexValue;
   /** option for edge value */
   private final BooleanConfOption edgeValue;
+  /** option for incoming message */
+  private final BooleanConfOption incomingMessage;
   /** option for outgoing message */
   private final BooleanConfOption outgoingMessage;
 
@@ -47,6 +49,8 @@ public class PerGraphTypeBooleanConfOption {
     vertexValue = new BooleanConfOption(keyPrefix + ".vertex.value",
         defaultValue, description);
     edgeValue = new BooleanConfOption(keyPrefix + ".edge.value",
+        defaultValue, description);
+    incomingMessage = new BooleanConfOption(keyPrefix + ".incoming.message",
         defaultValue, description);
     outgoingMessage = new BooleanConfOption(keyPrefix + ".outgoing.message",
         defaultValue, description);
@@ -66,6 +70,8 @@ public class PerGraphTypeBooleanConfOption {
       return vertexValue;
     case EDGE_VALUE:
       return edgeValue;
+    case INCOMING_MESSAGE_VALUE:
+      return incomingMessage;
     case OUTGOING_MESSAGE_VALUE:
       return outgoingMessage;
     default:
@@ -87,6 +93,10 @@ public class PerGraphTypeBooleanConfOption {
 
   public BooleanConfOption getEdgeValue() {
     return edgeValue;
+  }
+
+  public BooleanConfOption getIncomingMessage() {
+    return incomingMessage;
   }
 
   public BooleanConfOption getOutgoingMessage() {

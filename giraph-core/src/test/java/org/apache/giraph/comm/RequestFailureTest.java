@@ -98,7 +98,7 @@ public class RequestFailureTest {
 
     // Send the request
     SendWorkerMessagesRequest<IntWritable, IntWritable> request =
-        new SendWorkerMessagesRequest<IntWritable, IntWritable>(dataToSend);
+        new SendWorkerMessagesRequest<IntWritable, IntWritable>(dataToSend, conf);
     request.setConf(conf);
     return request;
   }
@@ -160,11 +160,10 @@ public class RequestFailureTest {
     WorkerInfo workerInfo = new WorkerInfo();
     server = new NettyServer(conf,
         new WorkerRequestServerHandler.Factory(serverData), workerInfo,
-            context, new MockExceptionHandler());
+            context);
     server.start();
-    workerInfo.setInetSocketAddress(server.getMyAddress(), server.getLocalHostOrIp());
-    client = new NettyClient(context, conf, new WorkerInfo(),
-        new MockExceptionHandler());
+    workerInfo.setInetSocketAddress(server.getMyAddress());
+    client = new NettyClient(context, conf, new WorkerInfo());
     client.connectAllAddresses(
         Lists.<WorkerInfo>newArrayList(workerInfo));
 

@@ -18,6 +18,7 @@
 
 package org.apache.giraph.zk;
 
+import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
 import com.google.common.io.Closeables;
 import com.google.common.util.concurrent.Uninterruptibles;
@@ -31,18 +32,25 @@ import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.mapreduce.Mapper;
+import org.apache.log4j.Level;
 import org.apache.log4j.Logger;
+import org.apache.zookeeper.server.quorum.QuorumPeerMain;
 
+import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileWriter;
 import java.io.IOException;
+import java.io.InputStream;
+import java.io.InputStreamReader;
 import java.io.Writer;
 import java.net.ConnectException;
 import java.net.InetSocketAddress;
 import java.net.Socket;
 import java.net.SocketTimeoutException;
+import java.nio.charset.Charset;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
@@ -89,8 +97,10 @@ public class ZooKeeperManager {
   private final int serverCount;
   /** File system */
   private final FileSystem fs;
-  /** Zookeeper wrapper */
-  private ZooKeeperRunner zkRunner;
+  /** ZooKeeper process */
+  private Process zkProcess = null;
+  /** Thread that gets the zkProcess output */
+  private StreamCollector zkProcessCollector = null;
   /** ZooKeeper local file system directory */
   private final String zkDir;
   /** ZooKeeper config file path */
@@ -187,6 +197,73 @@ public class ZooKeeperManager {
     }
 
     return result;
+  }
+
+  /**
+   * Collects the output of a stream and dumps it to the log.
+   */
+  private static class StreamCollector extends Thread {
+    /** Number of last lines to keep */
+    private static final int LAST_LINES_COUNT = 100;
+    /** Class logger */
+    private static final Logger LOG = Logger.getLogger(StreamCollector.class);
+    /** Buffered reader of input stream */
+    private final BufferedReader bufferedReader;
+    /** Last lines (help to debug failures) */
+    private final LinkedList<String> lastLines = Lists.newLinkedList();
+    /**
+     * Constructor.
+     *
+     * @param is InputStream to dump to LOG.info
+     */
+    public StreamCollector(final InputStream is) {
+      super(StreamCollector.class.getName());
+      setDaemon(true);
+      InputStreamReader streamReader = new InputStreamReader(is,
+          Charset.defaultCharset());
+      bufferedReader = new BufferedReader(streamReader);
+    }
+
+    @Override
+    public void run() {
+      readLines();
+    }
+
+    /**
+     * Read all the lines from the bufferedReader.
+     */
+    private synchronized void readLines() {
+      String line;
+      try {
+        while ((line = bufferedReader.readLine()) != null) {
+          if (lastLines.size() > LAST_LINES_COUNT) {
+            lastLines.removeFirst();
+          }
+          lastLines.add(line);
+
+          if (LOG.isDebugEnabled()) {
+            LOG.debug("readLines: " + line);
+          }
+        }
+      } catch (IOException e) {
+        LOG.error("readLines: Ignoring IOException", e);
+      }
+    }
+
+    /**
+     * Dump the last n lines of the collector.  Likely used in
+     * the case of failure.
+     *
+     * @param level Log level to dump with
+     */
+    public synchronized void dumpLastLines(Level level) {
+      // Get any remaining lines
+      readLines();
+      // Dump the lines to the screen
+      for (String line : lastLines) {
+        LOG.log(level, line);
+      }
+    }
   }
 
   /**
@@ -333,7 +410,7 @@ public class ZooKeeperManager {
           }
           if (!hostnameTaskMap.containsKey(hostnameTaskArray[0])) {
             hostnameTaskMap.put(hostnameTaskArray[0],
-                Integer.valueOf(hostnameTaskArray[1]));
+                new Integer(hostnameTaskArray[1]));
           }
         }
         if (LOG.isInfoEnabled()) {
@@ -542,13 +619,13 @@ public class ZooKeeperManager {
                 myidWriter = new FileWriter(zkDir + "/myid");
                 myidWriter.write(i + "\n");
               } finally {
-                Closeables.close(myidWriter, true);
+                Closeables.closeQuietly(myidWriter);
               }
             }
           }
         }
       } finally {
-        Closeables.close(writer, true);
+        Closeables.closeQuietly(writer);
       }
     } catch (IOException e) {
       throw new IllegalStateException(
@@ -575,9 +652,67 @@ public class ZooKeeperManager {
             "directory " + this.zkDir, e);
       }
       generateZooKeeperConfigFile(new ArrayList<>(zkServerPortMap.keySet()));
-      synchronized (this) {
-        zkRunner = createRunner();
-        zkRunner.start(zkDir, configFilePath);
+      ProcessBuilder processBuilder = new ProcessBuilder();
+      List<String> commandList = Lists.newArrayList();
+      String javaHome = System.getProperty("java.home");
+      if (javaHome == null) {
+        throw new IllegalArgumentException(
+            "onlineZooKeeperServers: java.home is not set!");
+      }
+      commandList.add(javaHome + "/bin/java");
+      commandList.add("-cp");
+      commandList.add(System.getProperty("java.class.path"));
+      String zkJavaOptsString = GiraphConstants.ZOOKEEPER_JAVA_OPTS.get(conf);
+      String[] zkJavaOptsArray = zkJavaOptsString.split(" ");
+      if (zkJavaOptsArray != null) {
+        commandList.addAll(Arrays.asList(zkJavaOptsArray));
+      }
+      commandList.add(QuorumPeerMain.class.getName());
+      commandList.add(configFilePath);
+      processBuilder.command(commandList);
+      File execDirectory = new File(zkDir);
+      processBuilder.directory(execDirectory);
+      processBuilder.redirectErrorStream(true);
+      if (LOG.isInfoEnabled()) {
+        LOG.info("onlineZooKeeperServers: Attempting to " +
+            "start ZooKeeper server with command " + commandList +
+            " in directory " + execDirectory.toString());
+      }
+      try {
+        synchronized (this) {
+          zkProcess = processBuilder.start();
+          zkProcessCollector =
+              new StreamCollector(zkProcess.getInputStream());
+          zkProcessCollector.start();
+        }
+        Runnable runnable = new Runnable() {
+          public void run() {
+            LOG.info("run: Shutdown hook started.");
+            synchronized (this) {
+              if (zkProcess != null) {
+                LOG.warn("onlineZooKeeperServers: " +
+                         "Forced a shutdown hook kill of the " +
+                         "ZooKeeper process.");
+                zkProcess.destroy();
+                int exitCode = -1;
+                try {
+                  exitCode = zkProcess.waitFor();
+                } catch (InterruptedException e) {
+                  LOG.warn("run: Couldn't get exit code.");
+                }
+                LOG.info("onlineZooKeeperServers: ZooKeeper process exited " +
+                    "with " + exitCode + " (note that 143 " +
+                    "typically means killed).");
+              }
+            }
+          }
+        };
+        Runtime.getRuntime().addShutdownHook(new Thread(runnable));
+        LOG.info("onlineZooKeeperServers: Shutdown hook added.");
+      } catch (IOException e) {
+        LOG.error("onlineZooKeeperServers: Failed to start " +
+            "ZooKeeper process", e);
+        throw new RuntimeException(e);
       }
 
       // Once the server is up and running, notify that this server is up
@@ -772,7 +907,7 @@ public class ZooKeeperManager {
       createZooKeeperClosedStamp();
     }
     synchronized (this) {
-      if (zkRunner != null) {
+      if (zkProcess != null) {
         boolean isYarnJob = GiraphConstants.IS_PURE_YARN_JOB.get(conf);
         int totalWorkers = conf.getMapTasks();
         // A Yarn job always spawns MAX_WORKERS + 1 containers
@@ -782,40 +917,30 @@ public class ZooKeeperManager {
         LOG.info("offlineZooKeeperServers: Will wait for " +
             totalWorkers + " tasks");
         waitUntilAllTasksDone(totalWorkers);
-        zkRunner.stop();
+        zkProcess.destroy();
+        int exitValue = -1;
         File zkDirFile;
         try {
+          zkProcessCollector.join();
+          exitValue = zkProcess.waitFor();
           zkDirFile = new File(zkDir);
           FileUtils.deleteDirectory(zkDirFile);
+        } catch (InterruptedException e) {
+          LOG.warn("offlineZooKeeperServers: " +
+              "InterruptedException, but continuing ",
+              e);
         } catch (IOException e) {
           LOG.warn("offlineZooKeeperSevers: " +
-                  "IOException, but continuing",
+              "IOException, but continuing",
               e);
         }
         if (LOG.isInfoEnabled()) {
-          LOG.info("offlineZooKeeperServers: deleted directory " + zkDir);
+          LOG.info("offlineZooKeeperServers: waitFor returned " +
+              exitValue + " and deleted directory " + zkDir);
         }
-        zkRunner = null;
+        zkProcess = null;
       }
     }
-  }
-
-  /**
-   * Create appropriate zookeeper wrapper depending on configuration.
-   * Zookeeper can run in master process or outside as a separate
-   * java process.
-   *
-   * @return either in process or out of process wrapper.
-   */
-  private ZooKeeperRunner createRunner() {
-    ZooKeeperRunner runner;
-    if (GiraphConstants.ZOOKEEEPER_RUNS_IN_PROCESS.get(conf)) {
-      runner = new InProcessZooKeeperRunner();
-    } else {
-      runner = new OutOfProcessZooKeeperRunner();
-    }
-    runner.setConf(conf);
-    return runner;
   }
 
   /**
@@ -826,18 +951,21 @@ public class ZooKeeperManager {
    */
   public boolean runsZooKeeper() {
     synchronized (this) {
-      return zkRunner != null;
+      return zkProcess != null;
     }
   }
 
   /**
-   * Do necessary cleanup in zookeeper wrapper.
+   * Log the zookeeper output from the process (if it was started)
+   *
+   * @param level Log level to print at
    */
-  public void cleanup() {
-    synchronized (this) {
-      if (zkRunner != null) {
-        zkRunner.cleanup();
-      }
+  public void logZooKeeperOutput(Level level) {
+    if (zkProcessCollector != null) {
+      LOG.log(level, "logZooKeeperOutput: Dumping up to last " +
+          StreamCollector.LAST_LINES_COUNT +
+          " lines of the ZooKeeper process STDOUT and STDERR.");
+      zkProcessCollector.dumpLastLines(level);
     }
   }
 }

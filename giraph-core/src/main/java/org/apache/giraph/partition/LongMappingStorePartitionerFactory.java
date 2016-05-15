@@ -31,7 +31,7 @@ import org.apache.log4j.Logger;
  */
 @SuppressWarnings("unchecked")
 public class LongMappingStorePartitionerFactory<V extends Writable,
-    E extends Writable> extends GraphPartitionerFactory<LongWritable, V, E> {
+    E extends Writable> extends SimplePartitionerFactory<LongWritable, V, E> {
   /** Logger Instance */
   private static final Logger LOG = Logger.getLogger(
       LongMappingStorePartitionerFactory.class);
@@ -46,14 +46,14 @@ public class LongMappingStorePartitionerFactory<V extends Writable,
   }
 
   @Override
-  public int getPartition(LongWritable id, int partitionCount,
+  protected int getPartition(LongWritable id, int partitionCount,
     int workerCount) {
     return localData.getMappingStoreOps().getPartition(id,
         partitionCount, workerCount);
   }
 
   @Override
-  public int getWorker(int partition, int partitionCount, int workerCount) {
+  protected int getWorker(int partition, int partitionCount, int workerCount) {
     int numRows = partitionCount / workerCount;
     numRows = (numRows * workerCount == partitionCount) ? numRows : numRows + 1;
     return partition / numRows;

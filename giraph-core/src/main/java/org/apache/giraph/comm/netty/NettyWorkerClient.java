@@ -74,17 +74,13 @@ public class NettyWorkerClient<I extends WritableComparable,
    * @param context Context from mapper
    * @param configuration Configuration
    * @param service Used to get partition mapping
-   * @param exceptionHandler handler for uncaught exception. Will
-   *                         terminate job.
    */
   public NettyWorkerClient(
       Mapper<?, ?, ?, ?>.Context context,
       ImmutableClassesGiraphConfiguration<I, V, E> configuration,
-      CentralizedServiceWorker<I, V, E> service,
-      Thread.UncaughtExceptionHandler exceptionHandler) {
+      CentralizedServiceWorker<I, V, E> service) {
     this.nettyClient =
-        new NettyClient(context, configuration, service.getWorkerInfo(),
-            exceptionHandler);
+        new NettyClient(context, configuration, service.getWorkerInfo());
     this.conf = configuration;
     this.service = service;
     this.superstepRequestCounters = Maps.newHashMap();
@@ -138,14 +134,22 @@ public class NettyWorkerClient<I extends WritableComparable,
   }
 
   @Override
-  public void sendWritableRequest(int destTaskId,
+  public void sendWritableRequest(Integer destTaskId,
                                   WritableRequest request) {
+    sendWritableRequest(destTaskId, request, false);
+  }
+
+  @Override
+  public void sendWritableRequest(Integer destTaskId,
+                                  WritableRequest request,
+                                  boolean nonBlocking) {
     Counter counter = superstepRequestCounters.get(request.getType());
     if (counter != null) {
       counter.inc();
     }
-    nettyClient.sendWritableRequest(destTaskId, request);
+    nettyClient.sendWritableRequest(destTaskId, request, nonBlocking);
   }
+
 
   @Override
   public void waitAllRequests() {
@@ -180,12 +184,4 @@ else[HADOOP_NON_SECURE]*/
   }
 
 /*end[HADOOP_NON_SECURE]*/
-
-  /**
-   * @return Maximum number of open requests for each worker (user-defined
-   *         value)
-   */
-  public short getMaxOpenRequestsPerWorker() {
-    return nettyClient.getMaxOpenRequestsPerWorker();
-  }
 }

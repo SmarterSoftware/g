@@ -21,7 +21,6 @@ package org.apache.giraph.bsp;
 import org.apache.giraph.comm.ServerData;
 import org.apache.giraph.comm.WorkerClient;
 import org.apache.giraph.graph.FinishedSuperstepStats;
-import org.apache.giraph.graph.GlobalStats;
 import org.apache.giraph.graph.GraphTaskManager;
 import org.apache.giraph.graph.VertexEdgeCount;
 import org.apache.giraph.io.superstep_output.SuperstepOutput;
@@ -30,7 +29,9 @@ import org.apache.giraph.metrics.GiraphTimerContext;
 import org.apache.giraph.partition.PartitionOwner;
 import org.apache.giraph.partition.PartitionStats;
 import org.apache.giraph.partition.PartitionStore;
-import org.apache.giraph.worker.WorkerInputSplitsHandler;
+import org.apache.giraph.partition.PartitionPhilosophersTable;
+import org.apache.giraph.partition.VertexPhilosophersTable;
+import org.apache.giraph.partition.VertexTypeStore;
 import org.apache.giraph.worker.WorkerAggregatorHandler;
 import org.apache.giraph.worker.WorkerContext;
 import org.apache.giraph.worker.WorkerInfo;
@@ -231,6 +232,27 @@ public interface CentralizedServiceWorker<I extends WritableComparable,
   SuperstepOutput<I, V, E> getSuperstepOutput();
 
   /**
+   * YH: Get the vertex type store. For token passing.
+   *
+   * @return Vertex type store
+   */
+  VertexTypeStore<I, V, E> getVertexTypeStore();
+
+  /**
+   * YH: Get the philosophers table. For vertex-based distributed locking.
+   *
+   * @return Philosophers table
+   */
+  VertexPhilosophersTable<I, V, E> getVertexPhilosophersTable();
+
+  /**
+   * YH: Get the philosophers table. For partition-based distributed locking.
+   *
+   * @return Philosophers table
+   */
+  PartitionPhilosophersTable<I, V, E> getPartitionPhilosophersTable();
+
+  /**
    * Clean up the service (no calls may be issued after this)
    *
    * @param finishedSuperstepStats Finished supestep stats
@@ -239,25 +261,4 @@ public interface CentralizedServiceWorker<I extends WritableComparable,
    */
   void cleanup(FinishedSuperstepStats finishedSuperstepStats)
     throws IOException, InterruptedException;
-
-  /**
-   * Loads Global stats from zookeeper.
-   * @return global stats stored in zookeeper for
-   * previous superstep.
-   */
-  GlobalStats getGlobalStats();
-
-  /**
-   * Get the number of partitions owned by this worker
-   *
-   * @return number of partitions owned
-   */
-  int getNumPartitionsOwned();
-
-  /**
-   * Get input splits handler used during input
-   *
-   * @return Input splits handler
-   */
-  WorkerInputSplitsHandler getInputSplitsHandler();
 }

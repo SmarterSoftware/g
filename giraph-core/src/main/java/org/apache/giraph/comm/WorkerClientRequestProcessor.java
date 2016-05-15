@@ -33,34 +33,46 @@ import java.util.Iterator;
  *
  * @param <I> Vertex index value
  * @param <V> Vertex value
- * @param
- * <E> Edge value
+ * @param <E> Edge value
  */
 public interface WorkerClientRequestProcessor<I extends WritableComparable,
     V extends Writable, E extends Writable> {
   /**
+   * YH: Flag all subsequent messages as being either for the current
+   * phase (false) or for the next phase (true).
+   *
+   * @param forNextPhase True if message should be processed in next phase.
+   */
+  void setForNextPhase(boolean forNextPhase);
+
+  /**
    * Sends a message to destination vertex.
    *
+   * @param srcId Id of vertex sending the message
    * @param destVertexId Destination vertex id.
    * @param message Message to send.
    */
-  void sendMessageRequest(I destVertexId, Writable message);
+  void sendMessageRequest(I srcId, I destVertexId, Writable message);
 
   /**
    * Sends a message through all edges to all destinations.
    *
+   * @param srcId Id of vertex sending the message
    * @param vertex The source vertex.
    * @param message  Message to send.
    */
-  void sendMessageToAllRequest(Vertex<I, V, E> vertex, Writable message);
+  void sendMessageToAllRequest(
+    I srcId, Vertex<I, V, E> vertex, Writable message);
 
   /**
    * Sends a message to the targets in the iterator.
    *
+   * @param srcId Id of vertex sending the message
    * @param vertexIdIterator The iterator of target vertex ids.
    * @param message  Message to send.
    */
-  void sendMessageToAllRequest(Iterator<I> vertexIdIterator, Writable message);
+  void sendMessageToAllRequest(
+    I srcId, Iterator<I> vertexIdIterator, Writable message);
 
   /**
    * Sends a vertex to the appropriate partition owner

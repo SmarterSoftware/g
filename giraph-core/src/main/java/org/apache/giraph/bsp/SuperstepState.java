@@ -23,33 +23,11 @@ package org.apache.giraph.bsp;
  */
 public enum SuperstepState {
   /** Nothing happened yet */
-  INITIAL(false),
+  INITIAL,
   /** A worker died during this superstep */
-  WORKER_FAILURE(false),
+  WORKER_FAILURE,
   /** This superstep completed correctly */
-  THIS_SUPERSTEP_DONE(false),
+  THIS_SUPERSTEP_DONE,
   /** All supersteps are complete */
-  ALL_SUPERSTEPS_DONE(true),
-  /** Execution halted */
-  CHECKPOINT_AND_HALT(true);
-
-  /** Should we stop execution after this superstep? */
-  private boolean executionComplete;
-
-  /**
-   * Enum constructor
-   * @param executionComplete is final state?
-   */
-  SuperstepState(boolean executionComplete) {
-    this.executionComplete = executionComplete;
-  }
-
-  /**
-   * Returns true if execution has to be stopped after this
-   * superstep.
-   * @return whether execution is complete.
-   */
-  public boolean isExecutionComplete() {
-    return executionComplete;
-  }
+  ALL_SUPERSTEPS_DONE,
 }

@@ -27,9 +27,6 @@ import org.apache.hadoop.util.Progressable;
 
 import com.google.common.collect.MapMaker;
 
-import java.io.DataInput;
-import java.io.DataOutput;
-import java.io.IOException;
 import java.util.Iterator;
 import java.util.Map;
 import java.util.concurrent.ConcurrentMap;
@@ -90,21 +87,10 @@ public class SimpleEdgeStore<I extends WritableComparable,
   }
 
   @Override
-  protected OutEdges<I, E> getPartitionEdges(
-    Map.Entry<I, OutEdges<I, E>> entry) {
-    return entry.getValue();
-  }
-
-  @Override
-  protected void writeVertexKey(I key, DataOutput output) throws IOException {
-    key.write(output);
-  }
-
-  @Override
-  protected I readVertexKey(DataInput input) throws IOException {
-    I id = configuration.createVertexId();
-    id.readFields(input);
-    return id;
+  protected OutEdges<I, E> removePartitionEdges(
+      Map.Entry<I, OutEdges<I, E>> entry,
+      Map<I, OutEdges<I, E>> partitionEdges) {
+    return partitionEdges.put(entry.getKey(), null);
   }
 
   @Override

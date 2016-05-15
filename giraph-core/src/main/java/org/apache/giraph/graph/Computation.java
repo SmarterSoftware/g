@@ -17,10 +17,6 @@
  */
 package org.apache.giraph.graph;
 
-import java.io.IOException;
-import java.util.Iterator;
-
-import org.apache.giraph.bsp.CentralizedServiceWorker;
 import org.apache.giraph.comm.WorkerClientRequestProcessor;
 import org.apache.giraph.conf.ImmutableClassesGiraphConfigurable;
 import org.apache.giraph.conf.TypesHolder;
@@ -28,11 +24,12 @@ import org.apache.giraph.edge.Edge;
 import org.apache.giraph.edge.OutEdges;
 import org.apache.giraph.worker.WorkerAggregatorUsage;
 import org.apache.giraph.worker.WorkerContext;
-import org.apache.giraph.worker.WorkerGlobalCommUsage;
-import org.apache.giraph.worker.WorkerIndexUsage;
 import org.apache.hadoop.io.Writable;
 import org.apache.hadoop.io.WritableComparable;
 import org.apache.hadoop.mapreduce.Mapper;
+
+import java.io.IOException;
+import java.util.Iterator;
 
 /**
  * Interface for an application for computation.
@@ -58,7 +55,7 @@ public interface Computation<I extends WritableComparable,
     M2 extends Writable>
     extends TypesHolder<I, V, E, M1, M2>,
     ImmutableClassesGiraphConfigurable<I, V, E>,
-    WorkerGlobalCommUsage, WorkerAggregatorUsage, WorkerIndexUsage<I> {
+    WorkerAggregatorUsage {
   /**
    * Must be defined by user to do computation on a single Vertex.
    *
@@ -89,20 +86,38 @@ public interface Computation<I extends WritableComparable,
    *
    * @param graphState Graph state
    * @param workerClientRequestProcessor Processor for handling requests
-   * @param serviceWorker Centralized service worker
-   * @param workerGlobalCommUsage Worker global communication usage
+   * @param graphTaskManager Graph-wide BSP Mapper for this Vertex
+   * @param workerAggregatorUsage Worker aggregator usage
+   * @param workerContext Worker context
    */
   void initialize(GraphState graphState,
       WorkerClientRequestProcessor<I, V, E> workerClientRequestProcessor,
-      CentralizedServiceWorker<I, V, E> serviceWorker,
-      WorkerGlobalCommUsage workerGlobalCommUsage);
+      GraphTaskManager<I, V, E> graphTaskManager,
+      WorkerAggregatorUsage workerAggregatorUsage, WorkerContext workerContext);
 
   /**
-   * Retrieves the current superstep.
+   * Retrieves the current (global) superstep.
    *
-   * @return Current superstep
+   * YH: This is always the number of global supersteps---i.e., supersteps
+   * separated by global barriers. This differs from getLogicalSuperstep()
+   * only with asynchronous execution and ASYNC_DISABLE_BARRIERS enabled.
+   * Otherwise it is identical to getLogicalSuperstep().
+   *
+   * @return Current (global) superstep
    */
   long getSuperstep();
+
+  /**
+   * YH: Retrieves the current logical superstep.
+   *
+   * If using asynchronous execution with ASYNC_DISABLE_BARRIERS enabled,
+   * this will be the LOCAL superstep counter for this worker, which CAN
+   * differ from other workers---even if they are in the same global superstep.
+   * Otherwise, this is the regular global superstep (same for all workers).
+   *
+   * @return Current logical superstep
+   */
+  long getLogicalSuperstep();
 
   /**
    * Get the total (all workers) number of vertices that
@@ -119,6 +134,27 @@ public interface Computation<I extends WritableComparable,
    * @return Total number of edges (-1 if first superstep)
    */
   long getTotalNumEdges();
+
+  /**
+   * YH: Flag all subsequent messages as being either for the current
+   * phase (false) or for the next phase (true).
+   *
+   * @param forNextPhase True if message should be processed in next phase.
+   */
+  void setMessagesAreForNextPhase(boolean forNextPhase);
+
+  /**
+   * YH: Set the source vertex id for all messages that will be sent.
+   * By default, this is the current vertex being processed, or null
+   * if no vertex is currently being processed.
+   *
+   * Shouldn't be called by user code, UNLESS the current vertex being
+   * processed is not the source of messages to be sent. In that case,
+   * use this to set the correct source id before calling sendMessage*().
+   *
+   * @param id Id of vertex that will be sending messages.
+   */
+  void setCurrentSourceId(I id);
 
   /**
    * Send a message to a vertex id.

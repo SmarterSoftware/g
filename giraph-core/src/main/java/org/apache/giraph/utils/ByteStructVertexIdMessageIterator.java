@@ -46,14 +46,4 @@ public class ByteStructVertexIdMessageIterator<I extends WritableComparable,
   public M getCurrentMessage() {
     return getCurrentData();
   }
-
-  @Override
-  public int getCurrentMessageSize() {
-    return getCurrentDataSize();
-  }
-
-  @Override
-  public boolean isNewMessage() {
-    return true;
-  }
 }

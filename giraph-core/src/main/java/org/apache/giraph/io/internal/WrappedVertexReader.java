@@ -18,17 +18,17 @@
 
 package org.apache.giraph.io.internal;
 
-import java.io.IOException;
-
 import org.apache.giraph.conf.ImmutableClassesGiraphConfiguration;
 import org.apache.giraph.graph.Vertex;
 import org.apache.giraph.io.VertexReader;
 import org.apache.giraph.job.HadoopUtils;
-import org.apache.giraph.worker.WorkerGlobalCommUsage;
+import org.apache.giraph.worker.WorkerAggregatorUsage;
 import org.apache.hadoop.io.Writable;
 import org.apache.hadoop.io.WritableComparable;
 import org.apache.hadoop.mapreduce.InputSplit;
 import org.apache.hadoop.mapreduce.TaskAttemptContext;
+
+import java.io.IOException;
 
 /**
  * For internal use only.
@@ -73,10 +73,9 @@ public class WrappedVertexReader<I extends WritableComparable,
   }
 
   @Override
-  public void setWorkerGlobalCommUsage(WorkerGlobalCommUsage usage) {
-    super.setWorkerGlobalCommUsage(usage);
+  public void setWorkerAggregatorUse(WorkerAggregatorUsage agg) {
     // Set aggregator usage for vertex reader
-    baseVertexReader.setWorkerGlobalCommUsage(usage);
+    baseVertexReader.setWorkerAggregatorUse(agg);
   }
 
   @Override

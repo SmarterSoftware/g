@@ -31,9 +31,6 @@ import it.unimi.dsi.fastutil.ints.Int2ObjectMaps;
 import it.unimi.dsi.fastutil.ints.Int2ObjectOpenHashMap;
 import it.unimi.dsi.fastutil.ints.Int2ObjectMap;
 
-import java.io.DataInput;
-import java.io.DataOutput;
-import java.io.IOException;
 import java.util.Iterator;
 import java.util.Map;
 
@@ -78,21 +75,10 @@ public class IntEdgeStore<V extends Writable, E extends Writable>
   }
 
   @Override
-  protected OutEdges<IntWritable, E> getPartitionEdges(
-    Int2ObjectMap.Entry<OutEdges<IntWritable, E>> entry) {
-    return entry.getValue();
-  }
-
-  @Override
-  protected void writeVertexKey(Integer key, DataOutput output)
-      throws IOException {
-    output.writeInt(key);
-  }
-
-  @Override
-  protected Integer readVertexKey(DataInput input)
-      throws IOException {
-    return input.readInt();
+  protected OutEdges<IntWritable, E> removePartitionEdges(
+    Int2ObjectMap.Entry<OutEdges<IntWritable, E>> entry,
+    Map<Integer, OutEdges<IntWritable, E>> partitionEdges) {
+    return partitionEdges.put(entry.getIntKey(), null);
   }
 
   @Override

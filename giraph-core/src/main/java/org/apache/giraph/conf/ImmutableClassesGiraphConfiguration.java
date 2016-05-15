@@ -18,16 +18,10 @@
 
 package org.apache.giraph.conf;
 
-import io.netty.handler.codec.ByteToMessageDecoder;
-import io.netty.handler.codec.MessageToByteEncoder;
-import io.netty.handler.codec.compression.JdkZlibDecoder;
-import io.netty.handler.codec.compression.JdkZlibEncoder;
-import io.netty.handler.codec.compression.SnappyFramedDecoder;
-import io.netty.handler.codec.compression.SnappyFramedEncoder;
-
+import com.google.common.base.Preconditions;
 import org.apache.giraph.aggregators.AggregatorWriter;
+import org.apache.giraph.bsp.CentralizedServiceWorker;
 import org.apache.giraph.combiner.MessageCombiner;
-import org.apache.giraph.comm.messages.MessageEncodeAndStoreType;
 import org.apache.giraph.edge.Edge;
 import org.apache.giraph.edge.EdgeFactory;
 import org.apache.giraph.edge.EdgeStoreFactory;
@@ -40,8 +34,8 @@ import org.apache.giraph.factories.ValueFactories;
 import org.apache.giraph.factories.VertexIdFactory;
 import org.apache.giraph.factories.VertexValueFactory;
 import org.apache.giraph.graph.Computation;
+import org.apache.giraph.graph.DefaultVertex;
 import org.apache.giraph.graph.Language;
-import org.apache.giraph.graph.MapperObserver;
 import org.apache.giraph.graph.Vertex;
 import org.apache.giraph.graph.VertexResolver;
 import org.apache.giraph.graph.VertexValueCombiner;
@@ -91,9 +85,6 @@ import org.apache.hadoop.io.WritableComparable;
 import org.apache.hadoop.mapreduce.Mapper;
 import org.apache.hadoop.util.Progressable;
 
-import com.google.common.base.Preconditions;
-
-
 /**
  * The classes set here are immutable, the remaining configuration is mutable.
  * Classes are immutable and final to provide the best performance for
@@ -117,6 +108,11 @@ public class ImmutableClassesGiraphConfiguration<I extends WritableComparable,
   /** Whether values (IVEMM) need Jython wrappers */
   private final PerGraphTypeBoolean valueNeedsWrappers;
 
+  /** YH: Configuration for async */
+  private final AsyncConfiguration asyncConf;
+
+  /** YH: Coordination service worker */
+  private CentralizedServiceWorker<I, V, E> serviceWorker;
 
   /**
    * Use unsafe serialization? Cached for fast access to instantiate the
@@ -144,7 +140,11 @@ public class ImmutableClassesGiraphConfiguration<I extends WritableComparable,
         GiraphConstants.GRAPH_TYPE_LANGUAGES, conf);
     valueNeedsWrappers = PerGraphTypeBoolean.readFromConf(
         GiraphConstants.GRAPH_TYPES_NEEDS_WRAPPERS, conf);
-    valueFactories = new ValueFactories<I, V, E>(this);
+    valueFactories = new ValueFactories<I, V, E>(conf);
+    valueFactories.initializeIVE(this);
+
+    // YH: initialize and configure asyncConf
+    asyncConf = new AsyncConfiguration(this);
   }
 
   /**
@@ -153,8 +153,8 @@ public class ImmutableClassesGiraphConfiguration<I extends WritableComparable,
    * @param obj Object
    */
   public void configureIfPossible(Object obj) {
-    if (obj instanceof GiraphConfigurationSettable) {
-      ((GiraphConfigurationSettable) obj).setConf(this);
+    if (obj instanceof ImmutableClassesGiraphConfigurable) {
+      ((ImmutableClassesGiraphConfigurable) obj).setConf(this);
     }
   }
 
@@ -321,18 +321,6 @@ public class ImmutableClassesGiraphConfiguration<I extends WritableComparable,
   public Class<? extends MappingInputFormat<I, V, E, ? extends Writable>>
   getMappingInputFormatClass() {
     return classes.getMappingInputFormatClass();
-  }
-
-  /**
-   * Set MappingInputFormatClass
-   *
-   * @param mappingInputFormatClass Determines how mappings are input
-   */
-  @Override
-  public void setMappingInputFormatClass(
-    Class<? extends MappingInputFormat> mappingInputFormatClass) {
-    super.setMappingInputFormatClass(mappingInputFormatClass);
-    classes.setMappingInputFormatClass(mappingInputFormatClass);
   }
 
   /**
@@ -531,6 +519,39 @@ public class ImmutableClassesGiraphConfiguration<I extends WritableComparable,
 
   /**
    * Get the user's subclassed
+   * {@link org.apache.giraph.combiner.MessageCombiner} class.
+   *
+   * @return User's combiner class
+   */
+  public Class<? extends MessageCombiner<I, ? extends Writable>>
+  getMessageCombinerClass() {
+    return classes.getMessageCombinerClass();
+  }
+
+  /**
+   * Create a user combiner class
+   *
+   * @param <M> Message data
+   * @return Instantiated user combiner class
+   */
+  @SuppressWarnings("rawtypes")
+  public <M extends Writable> MessageCombiner<I, M> createMessageCombiner() {
+    Class<? extends MessageCombiner<I, M>> klass =
+        classes.getMessageCombinerClass();
+    return ReflectionUtils.newInstance(klass, this);
+  }
+
+  /**
+   * Check if user set a combiner
+   *
+   * @return True iff user set a combiner class
+   */
+  public boolean useMessageCombiner() {
+    return classes.hasMessageCombinerClass();
+  }
+
+  /**
+   * Get the user's subclassed
    * {@link org.apache.giraph.graph.VertexValueCombiner} class.
    *
    * @return User's vertex value combiner class
@@ -658,12 +679,12 @@ public class ImmutableClassesGiraphConfiguration<I extends WritableComparable,
    * @return Instantiated vertex
    */
   public Vertex<I, V, E> createVertex() {
-    Class vertexClass = classes.getVertexClass();
-    return (Vertex<I, V, E>) ReflectionUtils.newInstance(vertexClass, this);
+    Vertex<I, V, E> vertex = new DefaultVertex<I, V, E>();
+    vertex.setConf(this);
+    return vertex;
   }
 
-
- /**
+  /**
    * Get the user's subclassed vertex index class.
    *
    * @return User's vertex index class
@@ -750,20 +771,6 @@ public class ImmutableClassesGiraphConfiguration<I extends WritableComparable,
   public WorkerObserver[] createWorkerObservers() {
     Class<? extends WorkerObserver>[] klasses = getWorkerObserverClasses();
     WorkerObserver[] objects = new WorkerObserver[klasses.length];
-    for (int i = 0; i < klasses.length; ++i) {
-      objects[i] = ReflectionUtils.newInstance(klasses[i], this);
-    }
-    return objects;
-  }
-
-  /**
-   * Create array of MapperObservers.
-   *
-   * @return Instantiated array of MapperObservers.
-   */
-  public MapperObserver[] createMapperObservers() {
-    Class<? extends MapperObserver>[] klasses = getMapperObserverClasses();
-    MapperObserver[] objects = new MapperObserver[klasses.length];
     for (int i = 0; i < klasses.length; ++i) {
       objects[i] = ReflectionUtils.newInstance(klasses[i], this);
     }
@@ -886,92 +893,47 @@ public class ImmutableClassesGiraphConfiguration<I extends WritableComparable,
    * @return User's vertex message value class
    */
   public <M extends Writable> Class<M> getIncomingMessageValueClass() {
-    return classes.getIncomingMessageClasses().getMessageClass();
+    return classes.getIncomingMessageValueClass();
+  }
+
+  /**
+   * Get the factory for creating incoming message values
+   *
+   * @param <M> Incoming Message type
+   * @return MessageValueFactory
+   */
+  public <M extends Writable> MessageValueFactory<M>
+  getIncomingMessageValueFactory() {
+    Class<? extends MessageValueFactory> klass =
+        valueFactories.getInMsgFactoryClass();
+    MessageValueFactory<M> factory = ReflectionUtils.newInstance(klass, this);
+    factory.initialize(this);
+    return factory;
   }
 
   /**
    * Get the user's subclassed outgoing message value class.
    *
-   * @param <M> Message type
+   * @param <M> Message data
    * @return User's vertex message value class
    */
   public <M extends Writable> Class<M> getOutgoingMessageValueClass() {
-    return classes.getOutgoingMessageClasses().getMessageClass();
+    return classes.getOutgoingMessageValueClass();
   }
 
   /**
-   * Get incoming message classes
-   * @param <M> message type
-   * @return incoming message classes
-   */
-  public <M extends Writable>
-  MessageClasses<I, M> getIncomingMessageClasses() {
-    return classes.getIncomingMessageClasses();
-  }
-
-  /**
-   * Get outgoing message classes
-   * @param <M> message type
-   * @return outgoing message classes
-   */
-  public <M extends Writable>
-  MessageClasses<I, M> getOutgoingMessageClasses() {
-    return classes.getOutgoingMessageClasses();
-  }
-
-  /**
-   * Create new outgoing message value factory
-   * @param <M> message type
-   * @return outgoing message value factory
-   */
-  public <M extends Writable>
-  MessageValueFactory<M> createOutgoingMessageValueFactory() {
-    return classes.getOutgoingMessageClasses().createMessageValueFactory(this);
-  }
-
-  /**
-   * Create new incoming message value factory
-   * @param <M> message type
-   * @return incoming message value factory
-   */
-  public <M extends Writable>
-  MessageValueFactory<M> createIncomingMessageValueFactory() {
-    return classes.getIncomingMessageClasses().createMessageValueFactory(this);
-  }
-
-  @Override
-  public void setMessageCombinerClass(
-      Class<? extends MessageCombiner> messageCombinerClass) {
-    throw new IllegalArgumentException(
-        "Cannot set message combiner on ImmutableClassesGiraphConfigurable");
-  }
-
-  /**
-   * Create a user combiner class
+   * Get the factory for creating outgoing message values
    *
-   * @param <M> Message data
-   * @return Instantiated user combiner class
+   * @param <M> Outgoing Message type
+   * @return MessageValueFactory
    */
-  public <M extends Writable> MessageCombiner<? super I, M>
-  createOutgoingMessageCombiner() {
-    return classes.getOutgoingMessageClasses().createMessageCombiner(this);
-  }
-
-  /**
-   * Check if user set a combiner
-   *
-   * @return True iff user set a combiner class
-   */
-  public boolean useOutgoingMessageCombiner() {
-    return classes.getOutgoingMessageClasses().useMessageCombiner();
-  }
-
-  /**
-   * Get outgoing message encode and store type
-   * @return outgoing message encode and store type
-   */
-  public MessageEncodeAndStoreType getOutgoingMessageEncodeAndStoreType() {
-    return classes.getOutgoingMessageClasses().getMessageEncodeAndStoreType();
+  public <M extends Writable> MessageValueFactory<M>
+  getOutgoingMessageValueFactory() {
+    Class<? extends MessageValueFactory> klass =
+        valueFactories.getOutMsgFactoryClass();
+    MessageValueFactory<M> factory = ReflectionUtils.newInstance(klass, this);
+    factory.initialize(this);
+    return factory;
   }
 
   @Override
@@ -1236,20 +1198,6 @@ public class ImmutableClassesGiraphConfiguration<I extends WritableComparable,
   }
 
   /**
-   * Create an extended data input (can be subclassed)
-   *
-   * @param buf Buffer to use for the input
-   * @return ExtendedDataInput object
-   */
-  public ExtendedDataInput createExtendedDataInput(byte[] buf) {
-    if (useUnsafeSerialization) {
-      return new UnsafeByteArrayInputStream(buf);
-    } else {
-      return new ExtendedByteArrayDataInput(buf);
-    }
-  }
-
-  /**
    * Create extendedDataInput based on extendedDataOutput
    *
    * @param extendedDataOutput extendedDataOutput
@@ -1267,54 +1215,44 @@ public class ImmutableClassesGiraphConfiguration<I extends WritableComparable,
    * @param superstepClasses SuperstepClasses
    */
   public void updateSuperstepClasses(SuperstepClasses superstepClasses) {
-    superstepClasses.updateGiraphClasses(classes);
+    Class<? extends Computation> computationClass =
+        superstepClasses.getComputationClass();
+    classes.setComputationClass(computationClass);
+    Class<? extends Writable> incomingMsgValueClass =
+        superstepClasses.getIncomingMessageClass();
+    if (incomingMsgValueClass != null) {
+      classes.setIncomingMessageValueClass(incomingMsgValueClass);
+    }
+    Class<? extends Writable> outgoingMsgValueClass =
+        superstepClasses.getOutgoingMessageClass();
+    if (outgoingMsgValueClass != null) {
+      classes.setOutgoingMessageValueClass(outgoingMsgValueClass);
+    }
+    classes.setMessageCombiner(superstepClasses.getMessageCombinerClass());
+  }
+
+
+  /**
+   * YH: Set current service worker.
+   *
+   * @param serviceWorker Current service worker.
+   */
+  public void setServiceWorker(
+      CentralizedServiceWorker<I, V, E> serviceWorker) {
+    this.serviceWorker = serviceWorker;
   }
 
   /**
-   * Has the user enabled compression in netty client & server
-   *
-   * @return true if ok to do compression of netty requests
+   * @return Current service worker.
    */
-  public boolean doCompression() {
-    switch (GiraphConstants.NETTY_COMPRESSION_ALGORITHM.get(this)) {
-    case "SNAPPY":
-      return true;
-    case "INFLATE":
-      return true;
-    default:
-      return false;
-    }
+  public CentralizedServiceWorker<I, V, E> getServiceWorker() {
+    return serviceWorker;
   }
 
   /**
-   * Get encoder for message compression in netty
-   *
-   * @return message to byte encoder
+   * @return Configuration for async mode.
    */
-  public MessageToByteEncoder getNettyCompressionEncoder() {
-    switch (GiraphConstants.NETTY_COMPRESSION_ALGORITHM.get(this)) {
-    case "SNAPPY":
-      return new SnappyFramedEncoder();
-    case "INFLATE":
-      return new JdkZlibEncoder();
-    default:
-      return null;
-    }
-  }
-
-  /**
-   * Get decoder for message decompression in netty
-   *
-   * @return byte to message decoder
-   */
-  public ByteToMessageDecoder getNettyCompressionDecoder() {
-    switch (GiraphConstants.NETTY_COMPRESSION_ALGORITHM.get(this)) {
-    case "SNAPPY":
-      return new SnappyFramedDecoder(true);
-    case "INFLATE":
-      return new JdkZlibDecoder();
-    default:
-      return null;
-    }
+  public AsyncConfiguration getAsyncConf() {
+    return asyncConf;
   }
 }

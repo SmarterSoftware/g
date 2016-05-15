@@ -18,18 +18,15 @@
 
 package org.apache.giraph.comm.requests;
 
-import java.io.DataInput;
-import java.io.IOException;
-
-import org.apache.giraph.comm.GlobalCommType;
 import org.apache.giraph.comm.ServerData;
+import org.apache.giraph.comm.aggregators.AggregatorUtils;
 import org.apache.giraph.comm.aggregators.AllAggregatorServerData;
-import org.apache.giraph.reducers.ReduceOperation;
-import org.apache.giraph.utils.UnsafeByteArrayOutputStream;
-import org.apache.giraph.utils.UnsafeReusableByteArrayInput;
-import org.apache.giraph.utils.WritableUtils;
+import org.apache.giraph.aggregators.Aggregator;
 import org.apache.hadoop.io.LongWritable;
 import org.apache.hadoop.io.Writable;
+
+import java.io.DataInput;
+import java.io.IOException;
 
 /**
  * Request to send final aggregatd values from master to worker which owns
@@ -56,32 +53,29 @@ public class SendAggregatorsToOwnerRequest
 
   @Override
   public void doRequest(ServerData serverData) {
-    UnsafeByteArrayOutputStream reusedOut = new UnsafeByteArrayOutputStream();
-    UnsafeReusableByteArrayInput reusedIn = new UnsafeReusableByteArrayInput();
-
     DataInput input = getDataInput();
     AllAggregatorServerData aggregatorData = serverData.getAllAggregatorData();
     try {
-      int num = input.readInt();
-      for (int i = 0; i < num; i++) {
-        String name = input.readUTF();
-        GlobalCommType type = GlobalCommType.values()[input.readByte()];
-        Writable value = WritableUtils.readWritableObject(input, conf);
-        if (type == GlobalCommType.SPECIAL_COUNT) {
-          aggregatorData.receivedRequestCountFromMaster(
-              ((LongWritable) value).get(),
+      int numAggregators = input.readInt();
+      for (int i = 0; i < numAggregators; i++) {
+        String aggregatorName = input.readUTF();
+        String aggregatorClassName = input.readUTF();
+        if (aggregatorName.equals(AggregatorUtils.SPECIAL_COUNT_AGGREGATOR)) {
+          LongWritable count = new LongWritable(0);
+          count.readFields(input);
+          aggregatorData.receivedRequestCountFromMaster(count.get(),
               getSenderTaskId());
         } else {
-          aggregatorData.receiveValueFromMaster(name, type, value);
-
-          if (type == GlobalCommType.REDUCE_OPERATIONS) {
-            ReduceOperation<Object, Writable> reduceOpCopy =
-                (ReduceOperation<Object, Writable>)
-                WritableUtils.createCopy(reusedOut, reusedIn, value, conf);
-
-            serverData.getOwnerAggregatorData().registerReducer(
-                name, reduceOpCopy);
-          }
+          Class<Aggregator<Writable>> aggregatorClass =
+              AggregatorUtils.getAggregatorClass(aggregatorClassName);
+          aggregatorData.registerAggregatorClass(aggregatorName,
+              aggregatorClass);
+          Writable aggregatorValue =
+              aggregatorData.createAggregatorInitialValue(aggregatorName);
+          aggregatorValue.readFields(input);
+          aggregatorData.setAggregatorValue(aggregatorName, aggregatorValue);
+          serverData.getOwnerAggregatorData().registerAggregator(
+              aggregatorName, aggregatorClass);
         }
       }
     } catch (IOException e) {
@@ -89,6 +83,11 @@ public class SendAggregatorsToOwnerRequest
           "IOException occurred while processing request", e);
     }
     aggregatorData.receivedRequestFromMaster(getData());
+  }
+
+  @Override
+  public void doLocalRequest(ServerData serverData) {
+    doRequest(serverData);  // YH: dummy wrapper
   }
 
   @Override

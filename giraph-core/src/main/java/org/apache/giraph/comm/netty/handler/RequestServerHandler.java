@@ -18,7 +18,6 @@
 
 package org.apache.giraph.comm.netty.handler;
 
-import org.apache.giraph.comm.netty.NettyClient;
 import org.apache.giraph.comm.requests.WritableRequest;
 import org.apache.giraph.conf.ImmutableClassesGiraphConfiguration;
 import org.apache.giraph.graph.TaskInfo;
@@ -41,7 +40,7 @@ import static org.apache.giraph.conf.GiraphConstants.NETTY_SIMULATE_FIRST_REQUES
 public abstract class RequestServerHandler<R> extends
   ChannelInboundHandlerAdapter {
   /** Number of bytes in the encoded response */
-  public static final int RESPONSE_BYTES = 14;
+  public static final int RESPONSE_BYTES = 13;
   /** Time class to use */
   private static Time TIME = SystemTime.get();
   /** Class logger */
@@ -57,10 +56,6 @@ public abstract class RequestServerHandler<R> extends
   private final TaskInfo myTaskInfo;
   /** Start nanoseconds for the processing time */
   private long startProcessingNanoseconds = -1;
-  /** Handler for uncaught exceptions */
-  private final Thread.UncaughtExceptionHandler exceptionHandler;
-  /** Do we have a limit on the number of open requests per worker */
-  private final boolean limitOpenRequestsPerWorker;
 
   /**
    * Constructor
@@ -68,19 +63,14 @@ public abstract class RequestServerHandler<R> extends
    * @param workerRequestReservedMap Worker request reservation map
    * @param conf Configuration
    * @param myTaskInfo Current task info
-   * @param exceptionHandler Handles uncaught exceptions
    */
   public RequestServerHandler(
       WorkerRequestReservedMap workerRequestReservedMap,
       ImmutableClassesGiraphConfiguration conf,
-      TaskInfo myTaskInfo,
-      Thread.UncaughtExceptionHandler exceptionHandler) {
+      TaskInfo myTaskInfo) {
     this.workerRequestReservedMap = workerRequestReservedMap;
     closeFirstRequest = NETTY_SIMULATE_FIRST_REQUEST_CLOSED.get(conf);
     this.myTaskInfo = myTaskInfo;
-    this.exceptionHandler = exceptionHandler;
-    this.limitOpenRequestsPerWorker =
-        NettyClient.LIMIT_OPEN_REQUESTS_PER_WORKER.get(conf);
   }
 
   @Override
@@ -103,7 +93,7 @@ public abstract class RequestServerHandler<R> extends
     }
 
     // Only execute this request exactly once
-    AckSignalFlag alreadyDone = AckSignalFlag.DUPLICATE_REQUEST;
+    int alreadyDone = 1;
     if (workerRequestReservedMap.reserveRequest(
         request.getClientId(),
         request.getRequestId())) {
@@ -118,7 +108,7 @@ public abstract class RequestServerHandler<R> extends
             ", " +  request.getType() + " took " +
             Times.getNanosSince(TIME, startProcessingNanoseconds) + " ns");
       }
-      alreadyDone = AckSignalFlag.NEW_REQUEST;
+      alreadyDone = 0;
     } else {
       LOG.info("messageReceived: Request id " +
           request.getRequestId() + " from client " +
@@ -131,36 +121,10 @@ public abstract class RequestServerHandler<R> extends
     ByteBuf buffer = ctx.alloc().buffer(RESPONSE_BYTES);
     buffer.writeInt(myTaskInfo.getTaskId());
     buffer.writeLong(request.getRequestId());
-    short signal;
-    if (limitOpenRequestsPerWorker) {
-      signal = NettyClient.calculateResponse(alreadyDone,
-          shouldIgnoreCredit(request.getClientId()), getCurrentMaxCredit());
-    } else {
-      signal = (short) alreadyDone.ordinal();
-    }
-    buffer.writeShort(signal);
+    buffer.writeByte(alreadyDone);
 
     ctx.write(buffer);
   }
-
-  /**
-   * Get the maximum number of open requests per worker (credit) at the moment
-   * the method is called. This number should generally depend on the available
-   * memory and processing rate.
-   *
-   * @return maximum number of open requests for each worker
-   */
-  protected abstract short getCurrentMaxCredit();
-
-  /**
-   * Whether we should ignore credit-based control flow in communicating with
-   * task with a given id. Generally, communication with master node does not
-   * require any control-flow mechanism.
-   *
-   * @param taskId id of the task on the other end of the communication
-   * @return 0 if credit should be ignored, 1 otherwise
-   */
-  protected abstract boolean shouldIgnoreCredit(int taskId);
 
   /**
    * Set the flag indicating already closed first request
@@ -195,9 +159,10 @@ public abstract class RequestServerHandler<R> extends
   }
 
   @Override
-  public void exceptionCaught(
-      ChannelHandlerContext ctx, Throwable cause) throws Exception {
-    exceptionHandler.uncaughtException(Thread.currentThread(), cause);
+  public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause)
+    throws Exception {
+    LOG.warn("exceptionCaught: Channel failed with " +
+        "remote address " + ctx.channel().remoteAddress(), cause);
   }
 
   /**
@@ -210,13 +175,11 @@ public abstract class RequestServerHandler<R> extends
      * @param workerRequestReservedMap Worker request reservation map
      * @param conf Configuration to use
      * @param myTaskInfo Current task info
-     * @param exceptionHandler Handles uncaught exceptions
      * @return New {@link RequestServerHandler}
      */
     RequestServerHandler newHandler(
         WorkerRequestReservedMap workerRequestReservedMap,
         ImmutableClassesGiraphConfiguration conf,
-        TaskInfo myTaskInfo,
-        Thread.UncaughtExceptionHandler exceptionHandler);
+        TaskInfo myTaskInfo);
   }
 }

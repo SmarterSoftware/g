@@ -23,7 +23,6 @@ import org.apache.giraph.comm.ServerData;
 import org.apache.giraph.comm.WorkerClientRequestProcessor;
 import org.apache.giraph.comm.messages.ByteArrayMessagesPerVertexStore;
 import org.apache.giraph.conf.GiraphConfiguration;
-import org.apache.giraph.conf.GiraphConstants;
 import org.apache.giraph.conf.ImmutableClassesGiraphConfiguration;
 import org.apache.giraph.edge.ArrayListEdges;
 import org.apache.giraph.graph.Computation;
@@ -92,13 +91,14 @@ public class MockUtils {
         }
 
         /** assert that the test vertex message has been sent to a particular vertex */
+        // YH: pass null in for source, as this doesn't test message w/ source
         public void verifyMessageSent(I targetVertexId, M message) {
             Mockito.verify(workerClientRequestProcessor).sendMessageRequest
-                (targetVertexId, message);
+                (null, targetVertexId, message);
         }
-
+        
         public void verifyMessageSentToAllEdges(Vertex<I, V, E> vertex, M message) {
-          Mockito.verify(workerClientRequestProcessor).sendMessageToAllRequest(vertex, message);
+          Mockito.verify(workerClientRequestProcessor).sendMessageToAllRequest(null, vertex, message);
       }
 
         /** assert that the test vertex has sent no message to a particular vertex */
@@ -137,7 +137,7 @@ public class MockUtils {
     Mockito.when(env.getContext().getConfiguration())
         .thenReturn(env.getConfiguration());
     computation.initialize(env.getGraphState(),
-        env.getWorkerClientRequestProcessor(), null, null);
+        env.getWorkerClientRequestProcessor(), null, null, null);
 
     GiraphConfiguration giraphConf = new GiraphConfiguration();
     giraphConf.setComputationClass(computation.getClass());
@@ -191,13 +191,10 @@ public class MockUtils {
     ImmutableClassesGiraphConfiguration conf, Mapper.Context context) {
     CentralizedServiceWorker<IntWritable, IntWritable, IntWritable> serviceWorker =
       MockUtils.mockServiceGetVertexPartitionOwner(1);
-    GiraphConstants.MESSAGE_STORE_FACTORY_CLASS.set(conf,
-        ByteArrayMessagesPerVertexStore.newFactory(serviceWorker, conf)
-            .getClass());
-
     ServerData<IntWritable, IntWritable, IntWritable> serverData =
       new ServerData<IntWritable, IntWritable, IntWritable>(
-          serviceWorker, conf, context);
+      serviceWorker, conf, ByteArrayMessagesPerVertexStore.newFactory(
+          serviceWorker, conf), context);
     // Here we add a partition to simulate the case that there is one partition.
     serverData.getPartitionStore().addPartition(new SimplePartition());
     return serverData;

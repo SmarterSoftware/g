@@ -25,7 +25,7 @@ import junit.framework.Assert;
 
 import org.apache.giraph.bsp.CentralizedServiceWorker;
 import org.apache.giraph.combiner.DoubleSumMessageCombiner;
-import org.apache.giraph.comm.messages.primitives.long_id.LongByteArrayMessageStore;
+import org.apache.giraph.comm.messages.primitives.LongByteArrayMessageStore;
 import org.apache.giraph.comm.messages.primitives.LongDoubleMessageStore;
 import org.apache.giraph.conf.GiraphConfiguration;
 import org.apache.giraph.conf.ImmutableClassesGiraphConfiguration;
@@ -72,8 +72,8 @@ public class TestLongDoublePrimitiveMessageStores {
         Lists.newArrayList(0, 1));
     Partition partition = Mockito.mock(Partition.class);
     Mockito.when(partition.getVertexCount()).thenReturn(Long.valueOf(1));
-    Mockito.when(partitionStore.getNextPartition()).thenReturn(partition);
-    Mockito.when(partitionStore.getNextPartition()).thenReturn(partition);
+    Mockito.when(partitionStore.getOrCreatePartition(0)).thenReturn(partition);
+    Mockito.when(partitionStore.getOrCreatePartition(1)).thenReturn(partition);
   }
 
   private static class LongDoubleNoOpComputation extends

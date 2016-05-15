@@ -19,6 +19,7 @@
 package org.apache.giraph.partition;
 
 import org.apache.giraph.conf.ImmutableClassesGiraphConfiguration;
+import org.apache.giraph.graph.Vertex;
 import org.apache.giraph.graph.VertexValueCombiner;
 import org.apache.giraph.utils.VertexIterator;
 import org.apache.hadoop.io.Writable;
@@ -97,7 +98,31 @@ public abstract class BasicPartition<I extends WritableComparable,
   public void addPartitionVertices(VertexIterator<I, V, E> vertexIterator) {
     while (vertexIterator.hasNext()) {
       vertexIterator.next();
-      if (putOrCombine(vertexIterator.getVertex())) {
+      Vertex<I, V, E> vertex = vertexIterator.getVertex();
+
+      // YH: vertices are added to their partitions AFTER they are
+      // transferred to their correct owner. Hence, this ensures only
+      // owning worker knows which of its vertices are boundary.
+      //
+      // This also avoids needing to store boolean for every vertex.
+      //
+      // NOTE: Though this doesn't currently support mutations, it can.
+      // To support mutations, we need to augment Vertex's edge mutation
+      // functions with "is-boundary?" rechecks. (If boolean is added
+      // to Vertex, need to modify WritableUtils as well.)
+      if (getConf().getAsyncConf().tokenSerialized()) {
+        getConf().getServiceWorker().getVertexTypeStore().
+          addVertex(vertex);
+      } else if (getConf().getAsyncConf().vertexLockSerialized()) {
+        getConf().getServiceWorker().getVertexPhilosophersTable().
+          addVertexIfBoundary(vertex);
+      } else if (getConf().getAsyncConf().partitionLockSerialized()) {
+        getConf().getServiceWorker().getPartitionPhilosophersTable().
+          addVertexDependencies(vertex);
+      }
+
+      // Release the vertex if it was put, otherwise reuse as an optimization
+      if (putOrCombine(vertex)) {
         vertexIterator.releaseVertex();
       }
     }

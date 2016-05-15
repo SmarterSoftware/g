@@ -35,13 +35,9 @@ import java.io.IOException;
 import java.util.Map;
 import java.util.Map.Entry;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentMap;
 
 /**
- * Send a collection of vertex mutations for a partition. This type of request
- * is used for two purposes: 1) sending mutation requests generated due to user
- * compute function in the middle of the execution of a superstep, and
- * 2) sending mutation requests due to partition migration.
+ * Send a collection of vertex mutations for a partition.
  *
  * @param <I> Vertex id
  * @param <V> Vertex data
@@ -81,12 +77,7 @@ public class SendPartitionMutationsRequest<I extends WritableComparable,
   public void readFieldsRequest(DataInput input) throws IOException {
     partitionId = input.readInt();
     int vertexIdMutationsSize = input.readInt();
-    // The request is going to be served by adding/merging it with the current
-    // mutations stored in ServerData. Since the mutations stored in ServerData
-    // is in the form of a ConcurrentMap, the data here is being read in this
-    // form, so it would be more efficient to merge/add the mutations in this
-    // request with/to mutations stored in SeverData.
-    vertexIdMutations = Maps.newConcurrentMap();
+    vertexIdMutations = Maps.newHashMapWithExpectedSize(vertexIdMutationsSize);
     for (int i = 0; i < vertexIdMutationsSize; ++i) {
       I vertexId = getConf().createVertexId();
       vertexId.readFields(input);
@@ -119,41 +110,31 @@ public class SendPartitionMutationsRequest<I extends WritableComparable,
 
   @Override
   public void doRequest(ServerData<I, V, E> serverData) {
-    ConcurrentMap<Integer, ConcurrentMap<I, VertexMutations<I, V, E>>>
-        partitionMutations = serverData.getPartitionMutations();
+    ConcurrentHashMap<I, VertexMutations<I, V, E>> vertexMutations =
+      serverData.getVertexMutations();
     Histogram verticesInMutationHist = GiraphMetrics.get().perSuperstep()
         .getUniformHistogram(MetricNames.VERTICES_IN_MUTATION_REQUEST);
-    int mutationSize = 0;
-    for (Map<I, VertexMutations<I, V, E>> map : partitionMutations.values()) {
-      mutationSize += map.size();
-    }
-    verticesInMutationHist.update(mutationSize);
-    // If the request is a result of sending mutations in the middle of the
-    // superstep to local partitions, the request is "short-circuit"ed and
-    // vertexIdMutations is coming from an instance of SendMutationsCache.
-    // Since the vertex mutations are created locally, they are not stored in
-    // a ConcurrentMap. So, we first need to transform the data structure
-    // for more efficiently merge/add process.
-    if (!(vertexIdMutations instanceof ConcurrentMap)) {
-      vertexIdMutations = new ConcurrentHashMap<>(vertexIdMutations);
-    }
-
-    ConcurrentMap<I, VertexMutations<I, V, E>> currentVertexIdMutations =
-        partitionMutations.putIfAbsent(partitionId,
-            (ConcurrentMap<I, VertexMutations<I, V, E>>) vertexIdMutations);
-
-    if (currentVertexIdMutations != null) {
-      for (Entry<I, VertexMutations<I, V, E>> entry : vertexIdMutations
-          .entrySet()) {
-        VertexMutations<I, V, E> mutations = currentVertexIdMutations
-            .putIfAbsent(entry.getKey(), entry.getValue());
-        if (mutations != null) {
-          synchronized (mutations) {
-            mutations.addVertexMutations(entry.getValue());
-          }
+    verticesInMutationHist.update(vertexMutations.size());
+    for (Entry<I, VertexMutations<I, V, E>> entry :
+        vertexIdMutations.entrySet()) {
+      VertexMutations<I, V, E> mutations =
+          vertexMutations.get(entry.getKey());
+      if (mutations == null) {
+        mutations = vertexMutations.putIfAbsent(
+            entry.getKey(), entry.getValue());
+        if (mutations == null) {
+          continue;
         }
       }
+      synchronized (mutations) {
+        mutations.addVertexMutations(entry.getValue());
+      }
     }
+  }
+
+  @Override
+  public void doLocalRequest(ServerData<I, V, E> serverData) {
+    doRequest(serverData);  // YH: dummy wrapper
   }
 
   @Override

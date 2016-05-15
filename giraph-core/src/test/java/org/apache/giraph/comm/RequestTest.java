@@ -20,12 +20,11 @@ package org.apache.giraph.comm;
 
 import org.apache.giraph.comm.netty.NettyClient;
 import org.apache.giraph.comm.netty.NettyServer;
-import org.apache.giraph.comm.netty.handler.AckSignalFlag;
 import org.apache.giraph.comm.netty.handler.WorkerRequestServerHandler;
 import org.apache.giraph.comm.requests.SendPartitionMutationsRequest;
 import org.apache.giraph.comm.requests.SendVertexRequest;
 import org.apache.giraph.comm.requests.SendWorkerMessagesRequest;
-import org.apache.giraph.comm.requests.SendWorkerOneMessageToManyRequest;
+import org.apache.giraph.comm.requests.SendWorkerOneToAllMessagesRequest;
 import org.apache.giraph.conf.GiraphConfiguration;
 import org.apache.giraph.conf.GiraphConstants;
 import org.apache.giraph.conf.ImmutableClassesGiraphConfiguration;
@@ -37,8 +36,8 @@ import org.apache.giraph.graph.VertexMutations;
 import org.apache.giraph.metrics.GiraphMetrics;
 import org.apache.giraph.partition.Partition;
 import org.apache.giraph.partition.PartitionStore;
-import org.apache.giraph.utils.ByteArrayOneMessageToManyIds;
 import org.apache.giraph.utils.VertexIdMessages;
+import org.apache.giraph.utils.ByteArrayOneToAllMessages;
 import org.apache.giraph.utils.ByteArrayVertexIdMessages;
 import org.apache.giraph.utils.ExtendedDataOutput;
 import org.apache.giraph.utils.IntNoOpComputation;
@@ -56,7 +55,7 @@ import com.google.common.collect.Maps;
 import java.io.IOException;
 import java.util.Map;
 import java.util.Map.Entry;
-import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.ConcurrentHashMap;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
@@ -96,12 +95,10 @@ public class RequestTest {
     workerInfo = new WorkerInfo();
     server = new NettyServer(conf,
         new WorkerRequestServerHandler.Factory(serverData), workerInfo,
-            context, new MockExceptionHandler());
+            context);
     server.start();
-
-    workerInfo.setInetSocketAddress(server.getMyAddress(), server.getLocalHostOrIp());
-    client = new NettyClient(context, conf, new WorkerInfo(),
-        new MockExceptionHandler());
+    workerInfo.setInetSocketAddress(server.getMyAddress());
+    client = new NettyClient(context, conf, new WorkerInfo());
     client.connectAllAddresses(
         Lists.<WorkerInfo>newArrayList(workerInfo));
   }
@@ -134,7 +131,7 @@ public class RequestTest {
     assertTrue(partitionStore.hasPartition(partitionId));
     int total = 0;
     Partition<IntWritable, IntWritable, IntWritable> partition2 =
-        partitionStore.removePartition(partitionId);
+        partitionStore.getOrCreatePartition(partitionId);
     for (Vertex<IntWritable, IntWritable, IntWritable> vertex : partition2) {
       total += vertex.getId().get();
     }
@@ -167,7 +164,7 @@ public class RequestTest {
 
     // Send the request
     SendWorkerMessagesRequest<IntWritable, IntWritable> request =
-      new SendWorkerMessagesRequest<>(dataToSend);
+      new SendWorkerMessagesRequest<>(dataToSend, conf);
     request.setConf(conf);
 
     client.sendWritableRequest(workerInfo.getTaskId(), request);
@@ -198,10 +195,10 @@ public class RequestTest {
   }
 
   @Test
-  public void sendWorkerIndividualMessagesRequest() throws IOException {
+  public void sendWorkerOneToAllMessagesRequest() throws IOException {
     // Data to send
-    ByteArrayOneMessageToManyIds<IntWritable, IntWritable>
-        dataToSend = new ByteArrayOneMessageToManyIds<>(new
+    ByteArrayOneToAllMessages<IntWritable, IntWritable>
+        dataToSend = new ByteArrayOneToAllMessages<>(new
         TestMessageValueFactory<>(IntWritable.class));
     dataToSend.setConf(conf);
     dataToSend.initialize();
@@ -213,8 +210,8 @@ public class RequestTest {
     dataToSend.add(output.getByteArray(), output.getPos(), 7, new IntWritable(1));
 
     // Send the request
-    SendWorkerOneMessageToManyRequest<IntWritable, IntWritable> request =
-      new SendWorkerOneMessageToManyRequest<>(dataToSend, conf);
+    SendWorkerOneToAllMessagesRequest<IntWritable, IntWritable> request =
+      new SendWorkerOneToAllMessagesRequest<>(dataToSend, conf);
     client.sendWritableRequest(workerInfo.getTaskId(), request);
     client.waitAllRequests();
 
@@ -274,8 +271,7 @@ public class RequestTest {
     // Send the request
     SendPartitionMutationsRequest<IntWritable, IntWritable, IntWritable>
         request = new SendPartitionMutationsRequest<IntWritable, IntWritable,
-        IntWritable>(partitionId,
-        vertexIdMutations);
+        IntWritable>(partitionId, vertexIdMutations);
     GiraphMetrics.init(conf);
     client.sendWritableRequest(workerInfo.getTaskId(), request);
     client.waitAllRequests();
@@ -285,42 +281,30 @@ public class RequestTest {
     server.stop();
 
     // Check the output
-    ConcurrentMap<IntWritable,
-        VertexMutations<IntWritable, IntWritable, IntWritable>>
-        inVertexIdMutations =
-        serverData.getPartitionMutations().get(partitionId);
+    ConcurrentHashMap<IntWritable, VertexMutations<IntWritable, IntWritable,
+    IntWritable>> inVertexIdMutations =
+        serverData.getVertexMutations();
     int keySum = 0;
-    for (Entry<IntWritable,
-        VertexMutations<IntWritable, IntWritable, IntWritable>> entry :
-        inVertexIdMutations
-        .entrySet()) {
+    for (Entry<IntWritable, VertexMutations<IntWritable, IntWritable,
+        IntWritable>> entry :
+          inVertexIdMutations.entrySet()) {
       synchronized (entry.getValue()) {
         keySum += entry.getKey().get();
         int vertexValueSum = 0;
-        for (Vertex<IntWritable, IntWritable, IntWritable> vertex : entry
-            .getValue().getAddedVertexList()) {
+        for (Vertex<IntWritable, IntWritable, IntWritable>
+        vertex : entry.getValue().getAddedVertexList()) {
           vertexValueSum += vertex.getValue().get();
         }
         assertEquals(3, vertexValueSum);
         assertEquals(2, entry.getValue().getRemovedVertexCount());
         int removeEdgeValueSum = 0;
-        for (Edge<IntWritable, IntWritable> edge : entry.getValue()
-            .getAddedEdgeList()) {
+        for (Edge<IntWritable, IntWritable> edge :
+            entry.getValue().getAddedEdgeList()) {
           removeEdgeValueSum += edge.getValue().get();
         }
         assertEquals(20, removeEdgeValueSum);
       }
     }
     assertEquals(55, keySum);
-  }
-
-  @Test
-
-  public void creditBasedResponseTest() throws IOException {
-    short response = NettyClient.calculateResponse(AckSignalFlag.NEW_REQUEST,
-        true, (short) 256);
-    assertEquals(NettyClient.getAckSignalFlag(response), AckSignalFlag.NEW_REQUEST);
-    assertEquals(NettyClient.shouldIgnoreCredit(response), true);
-    assertEquals(NettyClient.getCredit(response), (short) 256);
   }
 }

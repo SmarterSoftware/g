@@ -18,16 +18,9 @@
 
 package org.apache.giraph.worker;
 
-import java.io.DataInput;
-import java.io.DataOutput;
-import java.io.IOException;
-import java.util.List;
-
-import org.apache.giraph.bsp.CentralizedServiceWorker;
-import org.apache.giraph.comm.requests.SendWorkerToWorkerMessageRequest;
+import org.apache.giraph.conf.DefaultImmutableClassesGiraphConfigurable;
 import org.apache.giraph.graph.GraphState;
 import org.apache.hadoop.io.Writable;
-import org.apache.hadoop.io.WritableComparable;
 import org.apache.hadoop.mapreduce.Mapper;
 
 /**
@@ -36,35 +29,30 @@ import org.apache.hadoop.mapreduce.Mapper;
  */
 @SuppressWarnings("rawtypes")
 public abstract class WorkerContext
-  extends WorkerAggregatorDelegator<WritableComparable, Writable, Writable>
-  implements Writable, WorkerIndexUsage<WritableComparable> {
+  extends DefaultImmutableClassesGiraphConfigurable
+  implements WorkerAggregatorUsage {
   /** Global graph state */
   private GraphState graphState;
-
-  /** Service worker */
-  private CentralizedServiceWorker serviceWorker;
-  /** All workers info */
-  private AllWorkersInfo allWorkersInfo;
+  /** Worker aggregator usage */
+  private WorkerAggregatorUsage workerAggregatorUsage;
 
   /**
    * Set the graph state.
    *
    * @param graphState Used to set the graph state.
    */
-  public final void setGraphState(GraphState graphState) {
+  public void setGraphState(GraphState graphState) {
     this.graphState = graphState;
   }
 
   /**
-   * Setup superstep.
+   * Set worker aggregator usage
    *
-   * @param serviceWorker Service worker containing all the information
+   * @param workerAggregatorUsage Worker aggregator usage
    */
-  public final void setupSuperstep(
-      CentralizedServiceWorker<?, ?, ?> serviceWorker) {
-    this.serviceWorker = serviceWorker;
-    allWorkersInfo = new AllWorkersInfo(
-        serviceWorker.getWorkerInfoList(), serviceWorker.getWorkerInfo());
+  public void setWorkerAggregatorUsage(
+      WorkerAggregatorUsage workerAggregatorUsage) {
+    this.workerAggregatorUsage = workerAggregatorUsage;
   }
 
   /**
@@ -93,60 +81,6 @@ public abstract class WorkerContext
   public abstract void preSuperstep();
 
   /**
-   * Get number of workers
-   *
-   * @return Number of workers
-   */
-  @Override
-  public final int getWorkerCount() {
-    return allWorkersInfo.getWorkerCount();
-  }
-
-  /**
-   * Get index for this worker
-   *
-   * @return Index of this worker
-   */
-  @Override
-  public final int getMyWorkerIndex() {
-    return allWorkersInfo.getMyWorkerIndex();
-  }
-
-  @Override
-  public final int getWorkerForVertex(WritableComparable vertexId) {
-    return allWorkersInfo.getWorkerIndex(
-        serviceWorker.getVertexPartitionOwner(vertexId).getWorkerInfo());
-  }
-
-  /**
-   * Get messages which other workers sent to this worker and clear them (can
-   * be called once per superstep)
-   *
-   * @return Messages received
-   */
-  public final List<Writable> getAndClearMessagesFromOtherWorkers() {
-    return serviceWorker.getServerData().
-        getAndClearCurrentWorkerToWorkerMessages();
-  }
-
-  /**
-   * Send message to another worker
-   *
-   * @param message Message to send
-   * @param workerIndex Index of the worker to send the message to
-   */
-  public final void sendMessageToWorker(Writable message, int workerIndex) {
-    SendWorkerToWorkerMessageRequest request =
-        new SendWorkerToWorkerMessageRequest(message);
-    if (workerIndex == getMyWorkerIndex()) {
-      request.doRequest(serviceWorker.getServerData());
-    } else {
-      serviceWorker.getWorkerClient().sendWritableRequest(
-          allWorkersInfo.getWorkerList().get(workerIndex).getTaskId(), request);
-    }
-  }
-
-  /**
    * Execute user code.
    * This method is executed once on each Worker after each
    * superstep ends.
@@ -158,7 +92,7 @@ public abstract class WorkerContext
    *
    * @return Current superstep
    */
-  public final long getSuperstep() {
+  public long getSuperstep() {
     return graphState.getSuperstep();
   }
 
@@ -168,7 +102,7 @@ public abstract class WorkerContext
    *
    * @return Total number of vertices (-1 if first superstep)
    */
-  public final long getTotalNumVertices() {
+  public long getTotalNumVertices() {
     return graphState.getTotalNumVertices();
   }
 
@@ -178,7 +112,7 @@ public abstract class WorkerContext
    *
    * @return Total number of edges (-1 if first superstep)
    */
-  public final long getTotalNumEdges() {
+  public long getTotalNumEdges() {
     return graphState.getTotalNumEdges();
   }
 
@@ -187,25 +121,17 @@ public abstract class WorkerContext
    *
    * @return Mapper context
    */
-  public final Mapper.Context getContext() {
+  public Mapper.Context getContext() {
     return graphState.getContext();
   }
 
-  /**
-   * Call this to log a line to command line of the job. Use in moderation -
-   * it's a synchronous call to Job client
-   *
-   * @param line Line to print
-   */
-  public final void logToCommandLine(String line) {
-    serviceWorker.getJobProgressTracker().logInfo(line);
+  @Override
+  public <A extends Writable> void aggregate(String name, A value) {
+    workerAggregatorUsage.aggregate(name, value);
   }
 
   @Override
-  public void write(DataOutput dataOutput) throws IOException {
-  }
-
-  @Override
-  public void readFields(DataInput dataInput) throws IOException {
+  public <A extends Writable> A getAggregatedValue(String name) {
+    return workerAggregatorUsage.<A>getAggregatedValue(name);
   }
 }

@@ -37,12 +37,6 @@ public class LogVersions implements WorkerObserver, MasterObserver {
   }
 
   @Override
-  public void preLoad() { }
-
-  @Override
-  public void postSave() { }
-
-  @Override
   public void preApplication() {
     GiraphDepVersions.get().logVersionsUsed();
   }

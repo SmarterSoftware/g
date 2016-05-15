@@ -18,7 +18,7 @@
 
 package org.apache.giraph.comm.requests;
 
-import org.apache.giraph.master.MasterGlobalCommHandler;
+import org.apache.giraph.master.MasterAggregatorHandler;
 
 /**
  * Interface for requests sent to master to extend
@@ -27,7 +27,7 @@ public interface MasterRequest {
   /**
    * Execute the request
    *
-   * @param commHandler Master communication handler
+   * @param aggregatorHandler Master aggregator handler
    */
-  void doRequest(MasterGlobalCommHandler commHandler);
+  void doRequest(MasterAggregatorHandler aggregatorHandler);
 }

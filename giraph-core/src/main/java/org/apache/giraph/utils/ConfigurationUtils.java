@@ -17,12 +17,8 @@
  */
 package org.apache.giraph.utils;
 
-import static org.apache.giraph.conf.GiraphConstants.COMPUTATION_CLASS;
-import static org.apache.giraph.conf.GiraphConstants.TYPES_HOLDER_CLASS;
-
-import java.io.IOException;
-import java.util.List;
-
+import com.google.common.base.Splitter;
+import com.google.common.collect.Iterables;
 import org.apache.commons.cli.BasicParser;
 import org.apache.commons.cli.CommandLine;
 import org.apache.commons.cli.CommandLineParser;
@@ -33,7 +29,6 @@ import org.apache.giraph.Algorithm;
 import org.apache.giraph.aggregators.AggregatorWriter;
 import org.apache.giraph.combiner.MessageCombiner;
 import org.apache.giraph.conf.GiraphConfiguration;
-import org.apache.giraph.conf.GiraphConfigurationSettable;
 import org.apache.giraph.conf.GiraphConstants;
 import org.apache.giraph.conf.GiraphTypes;
 import org.apache.giraph.conf.ImmutableClassesGiraphConfiguration;
@@ -62,8 +57,11 @@ import org.apache.log4j.Level;
 import org.apache.log4j.Logger;
 import org.apache.zookeeper.ZooKeeper;
 
-import com.google.common.base.Splitter;
-import com.google.common.collect.Iterables;
+import java.io.IOException;
+import java.util.List;
+
+import static org.apache.giraph.conf.GiraphConstants.COMPUTATION_CLASS;
+import static org.apache.giraph.conf.GiraphConstants.TYPES_HOLDER_CLASS;
 
 /**
  * Translate command line args into Configuration Key-Value pairs.
@@ -72,8 +70,7 @@ public final class ConfigurationUtils {
   /** Class logger */
   private static final Logger LOG =
     Logger.getLogger(ConfigurationUtils.class);
-/*if[PURE_YARN]
-  // The base path for output dirs as saved in GiraphConfiguration
+  /** The base path for output dirs as saved in GiraphConfiguration */
   private static final Path BASE_OUTPUT_PATH;
   static {
     // whether local or remote, if there's no *-site.xml's to find, we're done
@@ -83,7 +80,6 @@ public final class ConfigurationUtils {
       throw new IllegalStateException("Error locating default base path!", ioe);
     }
   }
-end[PURE_YARN]*/
   /** Maintains our accepted options in case the caller wants to add some */
   private static Options OPTIONS;
 
@@ -149,10 +145,6 @@ end[PURE_YARN]*/
       ImmutableClassesGiraphConfiguration configuration) {
     if (configuration != null) {
       configuration.configureIfPossible(object);
-    } else if (object instanceof GiraphConfigurationSettable) {
-      throw new IllegalArgumentException(
-          "Trying to configure configurable object without value, " +
-          object.getClass());
     }
   }
 
@@ -441,7 +433,6 @@ end[PURE_YARN]*/
         }
       }
     }
-
     // YARN-ONLY OPTIONS
     if (cmd.hasOption("yj")) {
       conf.setYarnLibJars(cmd.getOptionValue("yj"));
@@ -450,7 +441,7 @@ end[PURE_YARN]*/
       conf.setYarnTaskHeapMb(
           Integer.parseInt(cmd.getOptionValue("yh")));
     }
-/*if[PURE_YARN]
+    /*if[PURE_YARN]
     if (cmd.hasOption("vof") || cmd.hasOption("eof")) {
       if (cmd.hasOption("op")) {
         // For YARN conf to get the out dir we need w/o a Job obj
@@ -469,7 +460,7 @@ end[PURE_YARN]*/
         }
       }
     }
-end[PURE_YARN]*/
+    end[PURE_YARN]*/
     // END YARN-ONLY OPTIONS
     handleComputationClass(conf, cmd, computationClassName);
   }

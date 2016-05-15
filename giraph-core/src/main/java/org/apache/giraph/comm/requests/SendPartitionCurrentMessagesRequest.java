@@ -21,8 +21,10 @@ package org.apache.giraph.comm.requests;
 import java.io.DataInput;
 import java.io.DataOutput;
 import java.io.IOException;
-
 import org.apache.giraph.comm.ServerData;
+import org.apache.giraph.comm.messages.MessageStore;
+import org.apache.giraph.comm.messages.MessageWithPhaseUtils;
+import org.apache.giraph.conf.ImmutableClassesGiraphConfiguration;
 import org.apache.giraph.utils.ByteArrayVertexIdMessages;
 import org.apache.hadoop.io.Writable;
 import org.apache.hadoop.io.WritableComparable;
@@ -52,12 +54,15 @@ public class SendPartitionCurrentMessagesRequest<I extends WritableComparable,
    *
    * @param partitionId Partition to send the request to
    * @param vertexIdMessages Map of messages to send
+   * @param conf ImmutableClassesGiraphConfiguration
    */
   public SendPartitionCurrentMessagesRequest(int partitionId,
-    ByteArrayVertexIdMessages<I, M> vertexIdMessages) {
+    ByteArrayVertexIdMessages<I, M> vertexIdMessages,
+    ImmutableClassesGiraphConfiguration conf) {
     super();
     this.partitionId = partitionId;
     this.vertexIdMessageMap = vertexIdMessages;
+    setConf(conf);
   }
 
   @Override
@@ -70,8 +75,8 @@ public class SendPartitionCurrentMessagesRequest<I extends WritableComparable,
     partitionId = input.readInt();
     // At this moment the Computation class have already been replaced with
     // the new one, and we deal with messages from previous superstep
-    vertexIdMessageMap = new ByteArrayVertexIdMessages<>(
-        getConf().<M>createIncomingMessageValueFactory());
+    vertexIdMessageMap = new ByteArrayVertexIdMessages<I, M>(
+        getConf().<M>getIncomingMessageValueFactory());
     vertexIdMessageMap.setConf(getConf());
     vertexIdMessageMap.initialize();
     vertexIdMessageMap.readFields(input);
@@ -85,9 +90,52 @@ public class SendPartitionCurrentMessagesRequest<I extends WritableComparable,
 
   @Override
   public void doRequest(ServerData<I, V, E> serverData) {
+    doRequest(serverData, false);  // YH: wrapper call
+  }
+
+  @Override
+  public void doLocalRequest(ServerData<I, V, E> serverData) {
+    doRequest(serverData, true);   // YH: wrapper call
+  }
+
+  /**
+   * Helper function for doRequest() and doLocalRequest()
+   *
+   * @param serverData ServerData
+   * @param isLocal Whether request is local or not
+   */
+  private void doRequest(ServerData<I, V, E> serverData, boolean isLocal) {
+    // YH: destinations should always be to remote workers
+    if (isLocal) {
+      throw new IllegalStateException("doLocalRequest: " +
+                                      "Destination is the local worker.");
+    }
+
+    MessageStore msgStore;
+    if (getConf().getAsyncConf().isAsync()) {
+      msgStore = serverData.<M>getRemoteMessageStore();
+    } else {
+      // otherwise use default BSP incoming message store
+      msgStore = serverData.<M>getIncomingMessageStore();
+    }
+
+    MessageStore nextPhaseMsgStore = null;
+    if (getConf().getAsyncConf().isMultiPhase()) {
+      nextPhaseMsgStore = serverData.<M>getNextPhaseRemoteMessageStore();
+    }
+
+    MessageStore currStore;
+    int partId = partitionId;
+
+    if (MessageWithPhaseUtils.forNextPhase(partId)) {
+      currStore = nextPhaseMsgStore;
+      partId = MessageWithPhaseUtils.decode(partId);
+    } else {
+      currStore = msgStore;
+    }
+
     try {
-      serverData.<M>getCurrentMessageStore().addPartitionMessages(partitionId,
-          vertexIdMessageMap);
+      currStore.addPartitionMessages(partId, vertexIdMessageMap);
     } catch (IOException e) {
       throw new RuntimeException("doRequest: Got IOException ", e);
     }

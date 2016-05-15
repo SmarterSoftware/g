@@ -18,14 +18,15 @@
 
 package org.apache.giraph.io;
 
-import java.io.IOException;
-
+import org.apache.giraph.conf.DefaultImmutableClassesGiraphConfigurable;
 import org.apache.giraph.mapping.MappingEntry;
-import org.apache.giraph.worker.WorkerAggregatorDelegator;
+import org.apache.giraph.worker.WorkerAggregatorUsage;
 import org.apache.hadoop.io.Writable;
 import org.apache.hadoop.io.WritableComparable;
 import org.apache.hadoop.mapreduce.InputSplit;
 import org.apache.hadoop.mapreduce.TaskAttemptContext;
+
+import java.io.IOException;
 
 /**
  * Will read the mapping from an input split.
@@ -37,7 +38,12 @@ import org.apache.hadoop.mapreduce.TaskAttemptContext;
  */
 public abstract class MappingReader<I extends WritableComparable,
     V extends Writable, E extends Writable, B extends Writable>
-    extends WorkerAggregatorDelegator<I, V, E> {
+    extends DefaultImmutableClassesGiraphConfigurable<I, V, E>
+    implements WorkerAggregatorUsage {
+
+  /** Aggregator usage for vertex reader */
+  private WorkerAggregatorUsage workerAggregatorUsage;
+
   /**
    * Use the input split and context to setup reading the vertices.
    * Guaranteed to be called prior to any other function.
@@ -50,6 +56,22 @@ public abstract class MappingReader<I extends WritableComparable,
   public abstract void initialize(InputSplit inputSplit,
     TaskAttemptContext context)
     throws IOException, InterruptedException;
+
+
+  /**
+   * Set aggregator usage. It provides the functionality
+   * of aggregation operation in reading a vertex.
+   * It is invoked just after initialization.
+   * E.g.,
+   * vertexReader.initialize(inputSplit, context);
+   * vertexReader.setAggregator(aggregatorUsage);
+   * This method is only for use by the infrastructure.
+   *
+   * @param agg aggregator usage for vertex reader
+   */
+  public void setWorkerAggregatorUse(WorkerAggregatorUsage agg) {
+    workerAggregatorUsage = agg;
+  }
 
   /**
    *
@@ -89,4 +111,14 @@ public abstract class MappingReader<I extends WritableComparable,
    * @throws InterruptedException
    */
   public abstract float getProgress() throws IOException, InterruptedException;
+
+  @Override
+  public <A extends Writable> void aggregate(String name, A value) {
+    workerAggregatorUsage.aggregate(name, value);
+  }
+
+  @Override
+  public <A extends Writable> A getAggregatedValue(String name) {
+    return workerAggregatorUsage.getAggregatedValue(name);
+  }
 }

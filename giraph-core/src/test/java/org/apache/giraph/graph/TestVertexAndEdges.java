@@ -161,7 +161,7 @@ public class TestVertexAndEdges {
     edgesClasses.add(LongDoubleHashMapEdges.class);
   }
 
-  protected Vertex<LongWritable, FloatWritable, DoubleWritable>
+  private Vertex<LongWritable, FloatWritable, DoubleWritable>
   instantiateVertex(Class<? extends OutEdges> edgesClass) {
     GiraphConfiguration giraphConfiguration = new GiraphConfiguration();
     giraphConfiguration.setComputationClass(TestComputation.class);
@@ -359,7 +359,7 @@ public class TestVertexAndEdges {
     }
   }
 
-  protected Vertex<LongWritable, FloatWritable, DoubleWritable>
+  private Vertex<LongWritable, FloatWritable, DoubleWritable>
   buildVertex(Class<? extends OutEdges> edgesClass) {
     Vertex<LongWritable, FloatWritable, DoubleWritable> vertex =
         instantiateVertex(edgesClass);

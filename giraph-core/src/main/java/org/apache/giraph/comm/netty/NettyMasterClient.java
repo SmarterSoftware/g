@@ -18,20 +18,19 @@
 
 package org.apache.giraph.comm.netty;
 
-import java.io.IOException;
-
+import org.apache.giraph.conf.ImmutableClassesGiraphConfiguration;
 import org.apache.giraph.bsp.CentralizedServiceMaster;
-import org.apache.giraph.comm.GlobalCommType;
 import org.apache.giraph.comm.MasterClient;
 import org.apache.giraph.comm.aggregators.AggregatorUtils;
-import org.apache.giraph.comm.aggregators.SendGlobalCommCache;
+import org.apache.giraph.comm.aggregators.SendAggregatorCache;
 import org.apache.giraph.comm.requests.SendAggregatorsToOwnerRequest;
-import org.apache.giraph.comm.requests.WritableRequest;
-import org.apache.giraph.conf.ImmutableClassesGiraphConfiguration;
+import org.apache.giraph.aggregators.Aggregator;
 import org.apache.giraph.worker.WorkerInfo;
-import org.apache.hadoop.io.Writable;
 import org.apache.hadoop.mapreduce.Mapper;
+import org.apache.hadoop.io.Writable;
 import org.apache.hadoop.util.Progressable;
+
+import java.io.IOException;
 
 /**
  * Netty implementation of {@link MasterClient}
@@ -40,10 +39,10 @@ public class NettyMasterClient implements MasterClient {
   /** Netty client that does the actual I/O */
   private final NettyClient nettyClient;
   /** Worker information for current superstep */
-  private final CentralizedServiceMaster<?, ?, ?> service;
+  private CentralizedServiceMaster<?, ?, ?> service;
   /** Cached map of partition ids to serialized aggregator data */
-  private final SendGlobalCommCache sendGlobalCommCache =
-      new SendGlobalCommCache(true);
+  private final SendAggregatorCache sendAggregatorCache =
+      new SendAggregatorCache();
   /** How big a single aggregator request can be */
   private final int maxBytesPerAggregatorRequest;
   /** Progressable used to report progress */
@@ -55,16 +54,12 @@ public class NettyMasterClient implements MasterClient {
    * @param context Context from mapper
    * @param configuration Configuration
    * @param service Centralized service
-   * @param exceptionHandler handler for uncaught exception. Will
-   *                         terminate job.
    */
   public NettyMasterClient(Mapper<?, ?, ?, ?>.Context context,
                            ImmutableClassesGiraphConfiguration configuration,
-                           CentralizedServiceMaster<?, ?, ?> service,
-                           Thread.UncaughtExceptionHandler exceptionHandler) {
+                           CentralizedServiceMaster<?, ?, ?> service) {
     this.nettyClient =
-        new NettyClient(context, configuration, service.getMasterInfo(),
-            exceptionHandler);
+        new NettyClient(context, configuration, service.getMasterInfo());
     this.service = service;
     this.progressable = context;
     maxBytesPerAggregatorRequest = configuration.getInt(
@@ -78,25 +73,26 @@ public class NettyMasterClient implements MasterClient {
   }
 
   @Override
-  public void sendToOwner(String name, GlobalCommType sendType, Writable object)
-    throws IOException {
+  public void sendAggregator(String aggregatorName,
+      Class<? extends Aggregator> aggregatorClass,
+      Writable aggregatedValue) throws IOException {
     WorkerInfo owner =
-        AggregatorUtils.getOwner(name, service.getWorkerInfoList());
-    int currentSize = sendGlobalCommCache.addValue(owner.getTaskId(),
-        name, sendType, object);
+        AggregatorUtils.getOwner(aggregatorName, service.getWorkerInfoList());
+    int currentSize = sendAggregatorCache.addAggregator(owner.getTaskId(),
+        aggregatorName, aggregatorClass, aggregatedValue);
     if (currentSize >= maxBytesPerAggregatorRequest) {
       flushAggregatorsToWorker(owner);
     }
   }
 
   @Override
-  public void finishSendingValues() throws IOException {
+  public void finishSendingAggregatedValues() throws IOException {
     for (WorkerInfo worker : service.getWorkerInfoList()) {
-      sendGlobalCommCache.addSpecialCount(worker.getTaskId());
+      sendAggregatorCache.addCountAggregator(worker.getTaskId());
       flushAggregatorsToWorker(worker);
       progressable.progress();
     }
-    sendGlobalCommCache.reset();
+    sendAggregatorCache.reset();
   }
 
   /**
@@ -105,21 +101,16 @@ public class NettyMasterClient implements MasterClient {
    * @param worker Worker which we want to send aggregators to
    */
   private void flushAggregatorsToWorker(WorkerInfo worker) {
-    byte[] data =
-        sendGlobalCommCache.removeSerialized(worker.getTaskId());
+    byte[] aggregatorData =
+        sendAggregatorCache.removeAggregators(worker.getTaskId());
     nettyClient.sendWritableRequest(
-        worker.getTaskId(), new SendAggregatorsToOwnerRequest(data,
+        worker.getTaskId(), new SendAggregatorsToOwnerRequest(aggregatorData,
           service.getMasterInfo().getTaskId()));
   }
 
   @Override
   public void flush() {
     nettyClient.waitAllRequests();
-  }
-
-  @Override
-  public void sendWritableRequest(int destTaskId, WritableRequest request) {
-    nettyClient.sendWritableRequest(destTaskId, request);
   }
 
   @Override

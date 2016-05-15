@@ -18,17 +18,11 @@
 
 package org.apache.giraph.worker;
 
-import java.io.ByteArrayInputStream;
-import java.io.DataInputStream;
-import java.io.IOException;
-import java.util.concurrent.Callable;
-
 import org.apache.giraph.comm.WorkerClientRequestProcessor;
 import org.apache.giraph.comm.netty.NettyWorkerClientRequestProcessor;
 import org.apache.giraph.conf.ImmutableClassesGiraphConfiguration;
 import org.apache.giraph.graph.VertexEdgeCount;
 import org.apache.giraph.io.GiraphInputFormat;
-import org.apache.giraph.io.InputType;
 import org.apache.giraph.metrics.GiraphMetrics;
 import org.apache.giraph.metrics.GiraphMetricsRegistry;
 import org.apache.giraph.metrics.MeterDesc;
@@ -36,15 +30,23 @@ import org.apache.giraph.metrics.MetricNames;
 import org.apache.giraph.time.SystemTime;
 import org.apache.giraph.time.Time;
 import org.apache.giraph.time.Times;
+import org.apache.giraph.zk.ZooKeeperExt;
+import org.apache.hadoop.io.Text;
 import org.apache.hadoop.io.Writable;
 import org.apache.hadoop.io.WritableComparable;
 import org.apache.hadoop.mapreduce.InputSplit;
 import org.apache.hadoop.mapreduce.Mapper;
 import org.apache.log4j.Logger;
+import org.apache.zookeeper.KeeperException;
 
 import com.yammer.metrics.core.Counter;
 import com.yammer.metrics.core.Meter;
 import com.yammer.metrics.util.PercentGauge;
+
+import java.io.ByteArrayInputStream;
+import java.io.DataInputStream;
+import java.io.IOException;
+import java.util.concurrent.Callable;
 
 /**
  * Abstract base class for loading vertex/edge input splits.
@@ -73,7 +75,9 @@ public abstract class InputSplitsCallable<I extends WritableComparable,
    * Stores and processes the list of InputSplits advertised
    * in a tree of child znodes by the master.
    */
-  private final WorkerInputSplitsHandler splitsHandler;
+  private final InputSplitsHandler splitsHandler;
+  /** ZooKeeperExt handle */
+  private final ZooKeeperExt zooKeeperExt;
   /** Get the start time in nanos */
   private final long startNanos = TIME.getNanoseconds();
   /** Whether to prioritize local input splits. */
@@ -87,17 +91,19 @@ public abstract class InputSplitsCallable<I extends WritableComparable,
    * @param configuration Configuration
    * @param bspServiceWorker service worker
    * @param splitsHandler Handler for input splits
+   * @param zooKeeperExt Handle to ZooKeeperExt
    */
   public InputSplitsCallable(
       Mapper<?, ?, ?, ?>.Context context,
       ImmutableClassesGiraphConfiguration<I, V, E> configuration,
       BspServiceWorker<I, V, E> bspServiceWorker,
-      WorkerInputSplitsHandler splitsHandler) {
+      InputSplitsHandler splitsHandler,
+      ZooKeeperExt zooKeeperExt) {
+    this.zooKeeperExt = zooKeeperExt;
     this.context = context;
     this.workerClientRequestProcessor =
         new NettyWorkerClientRequestProcessor<I, V, E>(
-            context, configuration, bspServiceWorker,
-            false /* useOneMessageToManyIdsEncoding, not useful for input */);
+            context, configuration, bspServiceWorker);
     this.useLocality = configuration.useInputSplitLocality();
     this.splitsHandler = splitsHandler;
     this.configuration = configuration;
@@ -110,13 +116,6 @@ public abstract class InputSplitsCallable<I extends WritableComparable,
    * @return Input format
    */
   public abstract GiraphInputFormat getInputFormat();
-
-  /**
-   * Get input type
-   *
-   * @return Input type
-   */
-  public abstract InputType getInputType();
 
   /**
    * Get Meter tracking edges loaded
@@ -205,22 +204,27 @@ public abstract class InputSplitsCallable<I extends WritableComparable,
   @Override
   public VertexEdgeCount call() {
     VertexEdgeCount vertexEdgeCount = new VertexEdgeCount();
-    byte[] serializedInputSplit;
+    String inputSplitPath;
     int inputSplitsProcessed = 0;
     try {
-      while ((serializedInputSplit =
-          splitsHandler.reserveInputSplit(getInputType())) != null) {
-        vertexEdgeCount = vertexEdgeCount.incrVertexEdgeCount(
-            loadInputSplit(serializedInputSplit));
+      while ((inputSplitPath = splitsHandler.reserveInputSplit()) != null) {
+        vertexEdgeCount =
+            vertexEdgeCount.incrVertexEdgeCount(loadInputSplit(inputSplitPath));
         context.progress();
         ++inputSplitsProcessed;
       }
+    } catch (KeeperException e) {
+      throw new IllegalStateException("call: KeeperException", e);
     } catch (InterruptedException e) {
       throw new IllegalStateException("call: InterruptedException", e);
     } catch (IOException e) {
       throw new IllegalStateException("call: IOException", e);
     } catch (ClassNotFoundException e) {
       throw new IllegalStateException("call: ClassNotFoundException", e);
+    } catch (InstantiationException e) {
+      throw new IllegalStateException("call: InstantiationException", e);
+    } catch (IllegalAccessException e) {
+      throw new IllegalStateException("call: IllegalAccessException", e);
     }
 
     if (LOG.isInfoEnabled()) {
@@ -247,19 +251,25 @@ public abstract class InputSplitsCallable<I extends WritableComparable,
    * reached in readVerticeFromInputSplit.
    * Mark the input split finished when done.
    *
-   * @param serializedInputSplit Serialized input split
+   * @param inputSplitPath ZK location of input split
    * @return Mapping of vertex indices and statistics, or null if no data read
    * @throws IOException
    * @throws ClassNotFoundException
    * @throws InterruptedException
+   * @throws InstantiationException
+   * @throws IllegalAccessException
    */
-  private VertexEdgeCount loadInputSplit(byte[] serializedInputSplit)
-      throws IOException, ClassNotFoundException, InterruptedException {
-    InputSplit inputSplit = getInputSplit(serializedInputSplit);
+  private VertexEdgeCount loadInputSplit(
+      String inputSplitPath)
+    throws IOException, ClassNotFoundException, InterruptedException,
+      InstantiationException, IllegalAccessException {
+    InputSplit inputSplit = getInputSplit(inputSplitPath);
     VertexEdgeCount vertexEdgeCount = readInputSplit(inputSplit);
     if (LOG.isInfoEnabled()) {
-      LOG.info("loadFromInputSplit: Finished loading " + vertexEdgeCount);
+      LOG.info("loadFromInputSplit: Finished loading " +
+          inputSplitPath + " " + vertexEdgeCount);
     }
+    splitsHandler.markInputSplitPathFinished(inputSplitPath);
     return vertexEdgeCount;
   }
 
@@ -267,19 +277,35 @@ public abstract class InputSplitsCallable<I extends WritableComparable,
    * Talk to ZooKeeper to convert the input split path to the actual
    * InputSplit.
    *
-   * @param serializedInputSplit Serialized input split
+   * @param inputSplitPath Location in ZK of input split
    * @return instance of InputSplit
    * @throws IOException
    * @throws ClassNotFoundException
    */
-  protected InputSplit getInputSplit(byte[] serializedInputSplit)
-      throws IOException, ClassNotFoundException {
+  protected InputSplit getInputSplit(String inputSplitPath)
+    throws IOException, ClassNotFoundException {
+    byte[] splitList;
+    try {
+      splitList = zooKeeperExt.getData(inputSplitPath, false, null);
+    } catch (KeeperException e) {
+      throw new IllegalStateException(
+          "getInputSplit: KeeperException on " + inputSplitPath, e);
+    } catch (InterruptedException e) {
+      throw new IllegalStateException(
+          "getInputSplit: IllegalStateException on " + inputSplitPath, e);
+    }
+    context.progress();
+
     DataInputStream inputStream =
-        new DataInputStream(new ByteArrayInputStream(serializedInputSplit));
+        new DataInputStream(new ByteArrayInputStream(splitList));
+    if (useLocality) {
+      Text.readString(inputStream); // location data unused here, skip
+    }
     InputSplit inputSplit = getInputFormat().readInputSplit(inputStream);
 
     if (LOG.isInfoEnabled()) {
-      LOG.info("getInputSplit: Reserved input split '" +
+      LOG.info("getInputSplit: Reserved " + inputSplitPath +
+          " from ZooKeeper and got input split '" +
           inputSplit.toString() + "'");
     }
     return inputSplit;

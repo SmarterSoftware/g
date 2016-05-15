@@ -19,19 +19,17 @@
 package org.apache.giraph.combiner;
 
 import org.apache.hadoop.io.FloatWritable;
-import org.apache.hadoop.io.WritableComparable;
+import org.apache.hadoop.io.IntWritable;
 
 /**
  * A combiner that sums float-valued messages
- *
- * Use SumMessageCombiner.DOUBLE instead.
  */
-@Deprecated
 public class FloatSumMessageCombiner
-    implements MessageCombiner<WritableComparable, FloatWritable> {
+    extends
+    MessageCombiner<IntWritable, FloatWritable> {
   @Override
-  public void combine(WritableComparable vertexIndex,
-      FloatWritable originalMessage, FloatWritable messageToCombine) {
+  public void combine(IntWritable vertexIndex, FloatWritable originalMessage,
+      FloatWritable messageToCombine) {
     originalMessage.set(originalMessage.get() + messageToCombine.get());
   }
 

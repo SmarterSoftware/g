@@ -18,51 +18,39 @@
 
 package org.apache.giraph.worker;
 
-import org.apache.giraph.conf.ImmutableClassesGiraphConfigurable;
-
 /**
- * Observer for worker. The user can subclass and register an observer with the
- * Giraph framework. The framework will execute methods of the observer at
- * designated moments of computation on each worker.
+ * Observer for Worker
  */
-public interface WorkerObserver extends ImmutableClassesGiraphConfigurable {
+public interface WorkerObserver {
   /**
-   * Initialize the observer. This method is executed once on each worker before
-   * loading.
-   */
-  void preLoad();
-
-  /**
-   * Initialize the observer. This method is executed once on each worker after
-   * loading before the first superstep starts.
+   * Initialize the WorkerContext.
+   * This method is executed once on each Worker before the first
+   * superstep starts.
    */
   void preApplication();
 
   /**
-   * Execute the observer. This method is executed once on each worker before
-   * each superstep starts.
+   * Finalize the WorkerContext.
+   * This method is executed once on each Worker after the last
+   * superstep ends.
+   */
+  void postApplication();
+
+  /**
+   * Execute user code.
+   * This method is executed once on each Worker before each
+   * superstep starts.
    *
    * @param superstep number of superstep
    */
   void preSuperstep(long superstep);
 
   /**
-   * Execute the observer. This method is executed once on each worker after
-   * each superstep ends.
+   * Execute user code.
+   * This method is executed once on each Worker after each
+   * superstep ends.
    *
    * @param superstep number of superstep
    */
   void postSuperstep(long superstep);
-
-  /**
-   * Finalize the observer. This method is executed once on each worker after
-   * the last superstep ends before saving.
-   */
-  void postApplication();
-
-  /**
-   * Finalize the observer. This method is executed once on each worker after
-   * saving.
-   */
-  void postSave();
 }

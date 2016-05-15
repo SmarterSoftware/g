@@ -87,7 +87,6 @@ public class MasterThread<I extends WritableComparable, V extends Writable,
    */
   @Override
   public void run() {
-LOG.info("run");
     // Algorithm:
     // 1. Become the master
     // 2. If desired, restart from a manual checkpoint
@@ -97,8 +96,6 @@ LOG.info("run");
       long initializeMillis = 0;
       long endMillis = 0;
       bspServiceMaster.setup();
-      SuperstepState superstepState = SuperstepState.INITIAL;
-
       if (bspServiceMaster.becomeMaster()) {
         // First call to checkWorkers waits for all pending resources.
         // If these resources are still available at subsequent calls it just
@@ -116,9 +113,11 @@ LOG.info("run");
           long setupMillis = System.currentTimeMillis() - initializeMillis;
           GiraphTimers.getInstance().getSetupMs().increment(setupMillis);
           setupSecs = setupMillis / 1000.0d;
-          while (!superstepState.isExecutionComplete()) {
+          SuperstepState superstepState = SuperstepState.INITIAL;
+          long cachedSuperstep = BspService.UNSET_SUPERSTEP;
+          while (superstepState != SuperstepState.ALL_SUPERSTEPS_DONE) {
             long startSuperstepMillis = System.currentTimeMillis();
-            long cachedSuperstep = bspServiceMaster.getSuperstep();
+            cachedSuperstep = bspServiceMaster.getSuperstep();
             GiraphMetrics.get().resetSuperstepMetrics(cachedSuperstep);
             Class<? extends Computation> computationClass =
                 bspServiceMaster.getMasterCompute().getComputation();
@@ -127,8 +126,7 @@ LOG.info("run");
                 startSuperstepMillis;
             superstepSecsMap.put(cachedSuperstep,
                 superstepMillis / 1000.0d);
-            /*if (LOG.isInfoEnabled())*/ 
-		{
+            if (LOG.isInfoEnabled()) {
               LOG.info("masterThread: Coordination of superstep " +
                   cachedSuperstep + " took " +
                   superstepMillis / 1000.0d +
@@ -155,7 +153,7 @@ LOG.info("run");
           bspServiceMaster.setJobState(ApplicationState.FINISHED, -1, -1);
         }
       }
-      bspServiceMaster.cleanup(superstepState);
+      bspServiceMaster.cleanup();
       if (!superstepSecsMap.isEmpty()) {
         GiraphTimers.getInstance().getShutdownMs().
           increment(System.currentTimeMillis() - endMillis);

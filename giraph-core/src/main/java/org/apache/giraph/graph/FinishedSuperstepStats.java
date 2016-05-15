@@ -17,8 +17,6 @@
  */
 package org.apache.giraph.graph;
 
-import org.apache.giraph.bsp.checkpoints.CheckpointStatus;
-
 /**
  * Immutable graph stats after the completion of a superstep
  */
@@ -29,11 +27,6 @@ public class FinishedSuperstepStats extends VertexEdgeCount {
   private final boolean allVerticesHalted;
   /** Needs to load a checkpoint */
   private final boolean mustLoadCheckpoint;
-  /**
-   * Master decides when we need to checkpoint and what should
-   * we do next.
-   */
-  private final CheckpointStatus checkpointStatus;
 
   /**
    * Constructor.
@@ -43,19 +36,16 @@ public class FinishedSuperstepStats extends VertexEdgeCount {
    * @param numVertices Number of vertices
    * @param numEdges Number of edges
    * @param mustLoadCheckpoint Has to load a checkpoint?
-   * @param checkpointStatus Should we checkpoint after this superstep?
    */
   public FinishedSuperstepStats(long numLocalVertices,
                                 boolean allVerticesHalted,
                                 long numVertices,
                                 long numEdges,
-                                boolean mustLoadCheckpoint,
-                                CheckpointStatus checkpointStatus) {
-    super(numVertices, numEdges, 0);
+                                boolean mustLoadCheckpoint) {
+    super(numVertices, numEdges);
     this.localVertexCount = numLocalVertices;
     this.allVerticesHalted = allVerticesHalted;
     this.mustLoadCheckpoint = mustLoadCheckpoint;
-    this.checkpointStatus = checkpointStatus;
   }
 
   public long getLocalVertexCount() {
@@ -78,13 +68,5 @@ public class FinishedSuperstepStats extends VertexEdgeCount {
    */
   public boolean mustLoadCheckpoint() {
     return mustLoadCheckpoint;
-  }
-
-  /**
-   * What master thinks about checkpointing after this superstep.
-   * @return CheckpointStatus that reflects master decision.
-   */
-  public CheckpointStatus getCheckpointStatus() {
-    return checkpointStatus;
   }
 }

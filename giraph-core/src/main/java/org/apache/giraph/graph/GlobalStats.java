@@ -22,7 +22,6 @@ import java.io.DataInput;
 import java.io.DataOutput;
 import java.io.IOException;
 
-import org.apache.giraph.bsp.checkpoints.CheckpointStatus;
 import org.apache.giraph.partition.PartitionStats;
 import org.apache.hadoop.io.Writable;
 
@@ -43,11 +42,12 @@ public class GlobalStats implements Writable {
   /** Whether the computation should be halted */
   private boolean haltComputation = false;
   /**
-   * Master's decision on whether we should checkpoint and
-   * what to do next.
+   * YH: True if the next global superstep will have a different
+   * computational phase from the previous superstep. Only needed
+   * for AP, not BAP.
+   * TODO-YH: remove this for BAP, this is only for AP
    */
-  private CheckpointStatus checkpointStatus =
-      CheckpointStatus.NONE;
+  private boolean isNewPhase = false;
 
   /**
    * Add the stats of a partition to the global stats.
@@ -88,12 +88,12 @@ public class GlobalStats implements Writable {
     haltComputation = value;
   }
 
-  public CheckpointStatus getCheckpointStatus() {
-    return checkpointStatus;
+  public boolean isNewPhase() {
+    return isNewPhase;
   }
 
-  public void setCheckpointStatus(CheckpointStatus checkpointStatus) {
-    this.checkpointStatus = checkpointStatus;
+  public void setNewPhase(boolean isNewPhase) {
+    this.isNewPhase = isNewPhase;
   }
 
   /**
@@ -122,11 +122,7 @@ public class GlobalStats implements Writable {
     messageCount = input.readLong();
     messageBytesCount = input.readLong();
     haltComputation = input.readBoolean();
-    if (input.readBoolean()) {
-      checkpointStatus = CheckpointStatus.values()[input.readInt()];
-    } else {
-      checkpointStatus = null;
-    }
+    isNewPhase = input.readBoolean();
   }
 
   @Override
@@ -137,10 +133,7 @@ public class GlobalStats implements Writable {
     output.writeLong(messageCount);
     output.writeLong(messageBytesCount);
     output.writeBoolean(haltComputation);
-    output.writeBoolean(checkpointStatus != null);
-    if (checkpointStatus != null) {
-      output.writeInt(checkpointStatus.ordinal());
-    }
+    output.writeBoolean(isNewPhase);
   }
 
   @Override
@@ -148,7 +141,7 @@ public class GlobalStats implements Writable {
     return "(vtx=" + vertexCount + ",finVtx=" +
         finishedVertexCount + ",edges=" + edgeCount + ",msgCount=" +
         messageCount + ",msgBytesCount=" +
-          messageBytesCount + ",haltComputation=" + haltComputation +
-        ", checkpointStatus=" + checkpointStatus + ')';
+        messageBytesCount + ",haltComputation=" + haltComputation +
+        ",isNewPhase=" + isNewPhase + ")";
   }
 }

@@ -18,6 +18,20 @@
 
 package org.apache.giraph.comm.messages.primitives;
 
+import org.apache.giraph.bsp.CentralizedServiceWorker;
+import org.apache.giraph.combiner.MessageCombiner;
+import org.apache.giraph.comm.messages.MessageStore;
+import org.apache.giraph.partition.Partition;
+import org.apache.giraph.utils.VertexIdMessageIterator;
+import org.apache.giraph.utils.VertexIdMessages;
+import org.apache.giraph.utils.EmptyIterable;
+import org.apache.hadoop.io.DoubleWritable;
+import org.apache.hadoop.io.LongWritable;
+
+import org.apache.hadoop.io.Writable;
+
+import com.google.common.collect.Lists;
+
 import it.unimi.dsi.fastutil.ints.Int2ObjectOpenHashMap;
 import it.unimi.dsi.fastutil.longs.Long2DoubleMap;
 import it.unimi.dsi.fastutil.longs.Long2DoubleOpenHashMap;
@@ -30,18 +44,6 @@ import java.io.IOException;
 import java.util.Collections;
 import java.util.List;
 
-import org.apache.giraph.bsp.CentralizedServiceWorker;
-import org.apache.giraph.combiner.MessageCombiner;
-import org.apache.giraph.comm.messages.MessageStore;
-import org.apache.giraph.utils.EmptyIterable;
-import org.apache.giraph.utils.VertexIdMessageIterator;
-import org.apache.giraph.utils.VertexIdMessages;
-import org.apache.hadoop.io.DoubleWritable;
-import org.apache.hadoop.io.LongWritable;
-import org.apache.hadoop.io.Writable;
-
-import com.google.common.collect.Lists;
-
 /**
  * Special message store to be used when ids are LongWritable and messages
  * are DoubleWritable and messageCombiner is used.
@@ -53,8 +55,7 @@ public class LongDoubleMessageStore
   /** Map from partition id to map from vertex id to message */
   private final Int2ObjectOpenHashMap<Long2DoubleOpenHashMap> map;
   /** Message messageCombiner */
-  private final
-  MessageCombiner<? super LongWritable, DoubleWritable> messageCombiner;
+  private final MessageCombiner<LongWritable, DoubleWritable> messageCombiner;
   /** Service worker */
   private final CentralizedServiceWorker<LongWritable, ?, ?> service;
 
@@ -66,23 +67,20 @@ public class LongDoubleMessageStore
    */
   public LongDoubleMessageStore(
       CentralizedServiceWorker<LongWritable, Writable, Writable> service,
-      MessageCombiner<? super LongWritable, DoubleWritable> messageCombiner) {
+      MessageCombiner<LongWritable, DoubleWritable> messageCombiner) {
     this.service = service;
     this.messageCombiner =
         messageCombiner;
 
     map = new Int2ObjectOpenHashMap<Long2DoubleOpenHashMap>();
     for (int partitionId : service.getPartitionStore().getPartitionIds()) {
-      Long2DoubleOpenHashMap partitionMap = new Long2DoubleOpenHashMap(
-          (int) service.getPartitionStore()
-              .getPartitionVertexCount(partitionId));
+      Partition<LongWritable, Writable, Writable> partition =
+          service.getPartitionStore().getOrCreatePartition(partitionId);
+      Long2DoubleOpenHashMap partitionMap =
+          new Long2DoubleOpenHashMap((int) partition.getVertexCount());
       map.put(partitionId, partitionMap);
+      service.getPartitionStore().putPartition(partition);
     }
-  }
-
-  @Override
-  public boolean isPointerListEncoding() {
-    return false;
   }
 
   /**
@@ -93,6 +91,31 @@ public class LongDoubleMessageStore
    */
   private Long2DoubleOpenHashMap getPartitionMap(LongWritable vertexId) {
     return map.get(service.getPartitionId(vertexId));
+  }
+
+  @Override
+  public void addPartitionMessage(int partitionId,
+      LongWritable destVertexId, DoubleWritable message) throws
+      IOException {
+    // TODO-YH: this creates a new object for EVERY message, which
+    // can result in substantial overheads.
+    //
+    // A better solution is to have a resuable DoubleWritable for each
+    // partition id (i.e., per-instance map), which are then automatically
+    // protected when synchronized on partitionMap below.
+    DoubleWritable reusableCurrentMessage = new DoubleWritable();
+
+    Long2DoubleOpenHashMap partitionMap = map.get(partitionId);
+    synchronized (partitionMap) {
+      long vertexId = destVertexId.get();
+      double msg = message.get();
+      if (partitionMap.containsKey(vertexId)) {
+        reusableCurrentMessage.set(partitionMap.get(vertexId));
+        messageCombiner.combine(destVertexId, reusableCurrentMessage, message);
+        msg = reusableCurrentMessage.get();
+      }
+      partitionMap.put(vertexId, msg);
+    }
   }
 
   @Override
@@ -125,40 +148,109 @@ public class LongDoubleMessageStore
   }
 
   @Override
-  public void finalizeStore() {
-  }
-
-  @Override
   public void clearPartition(int partitionId) throws IOException {
-    map.get(partitionId).clear();
+    // YH: not used in async, but synchronize anyway
+    Long2DoubleOpenHashMap partitionMap = map.get(partitionId);
+
+    if (partitionMap == null) {
+      return;
+    }
+
+    synchronized (partitionMap) {
+      partitionMap.clear();
+    }
   }
 
   @Override
   public boolean hasMessagesForVertex(LongWritable vertexId) {
-    return getPartitionMap(vertexId).containsKey(vertexId.get());
+    Long2DoubleOpenHashMap partitionMap = getPartitionMap(vertexId);
+
+    if (partitionMap == null) {
+      return false;
+    }
+
+    synchronized (partitionMap) {
+      return partitionMap.containsKey(vertexId.get());
+    }
   }
 
   @Override
   public boolean hasMessagesForPartition(int partitionId) {
-    Long2DoubleOpenHashMap partitionMessages = map.get(partitionId);
-    return partitionMessages != null && !partitionMessages.isEmpty();
+    Long2DoubleOpenHashMap partitionMap = map.get(partitionId);
+
+    if (partitionMap == null) {
+      return false;
+    }
+
+    synchronized (partitionMap) {
+      return !partitionMap.isEmpty();
+    }
+  }
+
+  @Override
+  public boolean hasMessages() {
+    for (Long2DoubleOpenHashMap partitionMap : map.values()) {
+      synchronized (partitionMap) {
+        if (!partitionMap.isEmpty()) {
+          return true;
+        }
+      }
+    }
+    return false;
   }
 
   @Override
   public Iterable<DoubleWritable> getVertexMessages(
       LongWritable vertexId) throws IOException {
     Long2DoubleOpenHashMap partitionMap = getPartitionMap(vertexId);
-    if (!partitionMap.containsKey(vertexId.get())) {
+
+    if (partitionMap == null) {
       return EmptyIterable.get();
-    } else {
-      return Collections.singleton(
-          new DoubleWritable(partitionMap.get(vertexId.get())));
+    }
+
+    // YH: must synchronize, as writes are concurrent w/ reads in async
+    synchronized (partitionMap) {
+      if (!partitionMap.containsKey(vertexId.get())) {
+        return EmptyIterable.get();
+      } else {
+        return Collections.singleton(
+            new DoubleWritable(partitionMap.get(vertexId.get())));
+      }
+    }
+  }
+
+  @Override
+  public Iterable<DoubleWritable> removeVertexMessages(
+      LongWritable vertexId) throws IOException {
+    Long2DoubleOpenHashMap partitionMap = getPartitionMap(vertexId);
+
+    if (partitionMap == null) {
+      return EmptyIterable.get();
+    }
+
+    // YH: must synchronize, as writes are concurrent w/ reads in async
+    synchronized (partitionMap) {
+      if (!partitionMap.containsKey(vertexId.get())) {
+        return EmptyIterable.get();
+      } else {
+        return Collections.singleton(
+            new DoubleWritable(partitionMap.remove(vertexId.get())));
+      }
     }
   }
 
   @Override
   public void clearVertexMessages(LongWritable vertexId) throws IOException {
-    getPartitionMap(vertexId).remove(vertexId.get());
+    // YH: not used in async, but synchronize anyway
+    Long2DoubleOpenHashMap partitionMap = getPartitionMap(vertexId);
+
+    if (partitionMap == null) {
+      return;
+    }
+
+    synchronized (partitionMap) {
+      partitionMap.remove(vertexId.get());
+    }
   }
 
   @Override
@@ -170,6 +262,12 @@ public class LongDoubleMessageStore
   public Iterable<LongWritable> getPartitionDestinationVertices(
       int partitionId) {
     Long2DoubleOpenHashMap partitionMap = map.get(partitionId);
+
+    if (partitionMap == null) {
+      return EmptyIterable.get();
+    }
+
+    // YH: used by single thread
     List<LongWritable> vertices =
         Lists.newArrayListWithCapacity(partitionMap.size());
     LongIterator iterator = partitionMap.keySet().iterator();
@@ -183,6 +281,7 @@ public class LongDoubleMessageStore
   public void writePartition(DataOutput out,
       int partitionId) throws IOException {
     Long2DoubleOpenHashMap partitionMap = map.get(partitionId);
+    // YH: used by single thread
     out.writeInt(partitionMap.size());
     ObjectIterator<Long2DoubleMap.Entry> iterator =
         partitionMap.long2DoubleEntrySet().fastIterator();
@@ -198,6 +297,7 @@ public class LongDoubleMessageStore
       int partitionId) throws IOException {
     int size = in.readInt();
     Long2DoubleOpenHashMap partitionMap = new Long2DoubleOpenHashMap(size);
+    // YH: used by single thread
     while (size-- > 0) {
       long vertexId = in.readLong();
       double message = in.readDouble();

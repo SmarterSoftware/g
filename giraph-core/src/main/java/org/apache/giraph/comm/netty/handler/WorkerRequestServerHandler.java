@@ -18,7 +18,6 @@
 
 package org.apache.giraph.comm.netty.handler;
 
-import org.apache.giraph.comm.netty.NettyWorkerClient;
 import org.apache.giraph.conf.ImmutableClassesGiraphConfiguration;
 import org.apache.giraph.comm.ServerData;
 import org.apache.giraph.comm.requests.WorkerRequest;
@@ -47,26 +46,13 @@ public class WorkerRequestServerHandler<I extends WritableComparable,
    * @param workerRequestReservedMap Worker request reservation map
    * @param conf                     Configuration
    * @param myTaskInfo               Current task info
-   * @param exceptionHandler         Handles uncaught exceptions
    */
   public WorkerRequestServerHandler(ServerData<I, V, E> serverData,
       WorkerRequestReservedMap workerRequestReservedMap,
       ImmutableClassesGiraphConfiguration conf,
-      TaskInfo myTaskInfo,
-      Thread.UncaughtExceptionHandler exceptionHandler) {
-    super(workerRequestReservedMap, conf, myTaskInfo, exceptionHandler);
+      TaskInfo myTaskInfo) {
+    super(workerRequestReservedMap, conf, myTaskInfo);
     this.serverData = serverData;
-  }
-
-  @Override
-  protected short getCurrentMaxCredit() {
-    return ((NettyWorkerClient) (serverData.getServiceWorker()
-        .getWorkerClient())).getMaxOpenRequestsPerWorker();
-  }
-
-  @Override
-  protected boolean shouldIgnoreCredit(int taskId) {
-    return taskId == serverData.getServiceWorker().getMasterInfo().getTaskId();
   }
 
   @Override
@@ -94,10 +80,9 @@ public class WorkerRequestServerHandler<I extends WritableComparable,
     public RequestServerHandler newHandler(
         WorkerRequestReservedMap workerRequestReservedMap,
         ImmutableClassesGiraphConfiguration conf,
-        TaskInfo myTaskInfo,
-        Thread.UncaughtExceptionHandler exceptionHandler) {
+        TaskInfo myTaskInfo) {
       return new WorkerRequestServerHandler<I, V, E, Writable>(serverData,
-          workerRequestReservedMap, conf, myTaskInfo, exceptionHandler);
+          workerRequestReservedMap, conf, myTaskInfo);
     }
   }
 }

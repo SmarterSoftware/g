@@ -35,7 +35,6 @@ import org.apache.giraph.bsp.CentralizedServiceWorker;
 import org.apache.giraph.comm.messages.MessageStoreFactory;
 import org.apache.giraph.comm.messages.MessagesIterable;
 import org.apache.giraph.conf.ImmutableClassesGiraphConfiguration;
-import org.apache.giraph.conf.MessageClasses;
 import org.apache.giraph.factories.MessageValueFactory;
 import org.apache.giraph.utils.io.DataInputOutput;
 import org.apache.hadoop.io.Writable;
@@ -54,8 +53,6 @@ import com.google.common.collect.Maps;
  */
 public class PartitionDiskBackedMessageStore<I extends WritableComparable,
     M extends Writable> implements Writable {
-  /** Message classes */
-  private final MessageClasses<I, M> messageClasses;
   /** Message value factory */
   private final MessageValueFactory<M> messageValueFactory;
   /**
@@ -81,18 +78,17 @@ public class PartitionDiskBackedMessageStore<I extends WritableComparable,
   /**
    * Constructor.
    *
-   * @param messageClasses      Message classes information
+   * @param messageValueFactory Used to create message values
    * @param config              Hadoop configuration
    * @param fileStoreFactory    Factory for creating file stores when flushing
    */
   public PartitionDiskBackedMessageStore(
-      MessageClasses<I, M> messageClasses,
+      MessageValueFactory<M> messageValueFactory,
       ImmutableClassesGiraphConfiguration<I, ?, ?> config,
       MessageStoreFactory<I, M, SequentialFileMessageStore<I, M>>
           fileStoreFactory) {
     inMemoryMessages = new ConcurrentSkipListMap<I, DataInputOutput>();
-    this.messageClasses = messageClasses;
-    this.messageValueFactory = messageClasses.createMessageValueFactory(config);
+    this.messageValueFactory = messageValueFactory;
     this.config = config;
     numberOfMessagesInMemory = new AtomicInteger(0);
     destinationVertices =
@@ -164,6 +160,29 @@ public class PartitionDiskBackedMessageStore<I extends WritableComparable,
   }
 
   /**
+   * Get and clear the messages for a vertex.
+   *
+   * @param vertexId Vertex id for which we want to get messages
+   * @return Iterable of messages for a vertex id
+   */
+  public Iterable<M> removeVertexMessages(I vertexId) throws IOException {
+    DataInputOutput dataInputOutput = inMemoryMessages.remove(vertexId);
+    if (dataInputOutput == null) {
+      dataInputOutput = config.createMessagesInputOutput();
+    }
+    Iterable<M> combinedIterable = new MessagesIterable<M>(
+        dataInputOutput, messageValueFactory);
+
+    // Note: this is used by DiskBackedMessageStore
+    // TODO-YH: this doesn't remove messages!!
+    for (SequentialFileMessageStore<I, M> fileStore : fileStores) {
+      combinedIterable = Iterables.concat(combinedIterable,
+          fileStore.getVertexMessages(vertexId));
+    }
+    return combinedIterable;
+  }
+
+  /**
    * Get number of messages in memory
    *
    * @return Number of messages in memory
@@ -180,6 +199,15 @@ public class PartitionDiskBackedMessageStore<I extends WritableComparable,
    */
   public boolean hasMessagesForVertex(I vertexId) {
     return destinationVertices.contains(vertexId);
+  }
+
+  /**
+   * Check if we have any unprocessed messages.
+   *
+   * @return True if we have unprocessed messages
+   */
+  public boolean hasMessages() {
+    return !destinationVertices.isEmpty();
   }
 
   /**
@@ -231,7 +259,7 @@ public class PartitionDiskBackedMessageStore<I extends WritableComparable,
       rwLock.writeLock().unlock();
     }
     SequentialFileMessageStore<I, M> fileStore =
-        fileStoreFactory.newStore(messageClasses);
+        fileStoreFactory.newStore(messageValueFactory);
     fileStore.addMessages(messagesToFlush);
 
     synchronized (fileStores) {
@@ -291,7 +319,7 @@ public class PartitionDiskBackedMessageStore<I extends WritableComparable,
     int numFileStores = in.readInt();
     for (int s = 0; s < numFileStores; s++) {
       SequentialFileMessageStore<I, M> fileStore =
-          fileStoreFactory.newStore(messageClasses);
+          fileStoreFactory.newStore(messageValueFactory);
       fileStore.readFields(in);
       fileStores.add(fileStore);
     }
@@ -345,8 +373,8 @@ public class PartitionDiskBackedMessageStore<I extends WritableComparable,
 
     @Override
     public PartitionDiskBackedMessageStore<I, M> newStore(
-        MessageClasses<I, M> messageClasses) {
-      return new PartitionDiskBackedMessageStore<I, M>(messageClasses,
+        MessageValueFactory<M> messageValueFactory) {
+      return new PartitionDiskBackedMessageStore<I, M>(messageValueFactory,
           config, fileStoreFactory);
     }
 

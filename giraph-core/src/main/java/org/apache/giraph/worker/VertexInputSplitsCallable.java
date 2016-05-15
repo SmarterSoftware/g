@@ -18,8 +18,6 @@
 
 package org.apache.giraph.worker;
 
-import java.io.IOException;
-
 import org.apache.giraph.conf.ImmutableClassesGiraphConfiguration;
 import org.apache.giraph.edge.Edge;
 import org.apache.giraph.edge.OutEdges;
@@ -30,10 +28,10 @@ import org.apache.giraph.io.VertexInputFormat;
 import org.apache.giraph.io.VertexReader;
 import org.apache.giraph.io.filters.VertexInputFilter;
 import org.apache.giraph.mapping.translate.TranslateEdge;
-import org.apache.giraph.io.InputType;
 import org.apache.giraph.partition.PartitionOwner;
 import org.apache.giraph.utils.LoggerUtils;
 import org.apache.giraph.utils.MemoryUtils;
+import org.apache.giraph.zk.ZooKeeperExt;
 import org.apache.hadoop.io.Writable;
 import org.apache.hadoop.io.WritableComparable;
 import org.apache.hadoop.mapreduce.InputSplit;
@@ -43,6 +41,8 @@ import org.apache.log4j.Logger;
 
 import com.yammer.metrics.core.Counter;
 import com.yammer.metrics.core.Meter;
+
+import java.io.IOException;
 
 /**
  * Load as many vertex input splits as possible.
@@ -79,7 +79,7 @@ public class VertexInputSplitsCallable<I extends WritableComparable,
    * Whether the chosen {@link OutEdges} implementation allows for Edge
    * reuse.
    */
-  private final boolean reuseEdgeObjects;
+  private boolean reuseEdgeObjects;
   /** Used to translate Edges during vertex input phase based on localData */
   private final TranslateEdge<I, E> translateEdge;
 
@@ -99,14 +99,17 @@ public class VertexInputSplitsCallable<I extends WritableComparable,
    * @param configuration Configuration
    * @param bspServiceWorker service worker
    * @param splitsHandler Handler for input splits
+   * @param zooKeeperExt Handle to ZooKeeperExt
    */
   public VertexInputSplitsCallable(
       VertexInputFormat<I, V, E> vertexInputFormat,
       Mapper<?, ?, ?, ?>.Context context,
       ImmutableClassesGiraphConfiguration<I, V, E> configuration,
       BspServiceWorker<I, V, E> bspServiceWorker,
-      WorkerInputSplitsHandler splitsHandler)  {
-    super(context, configuration, bspServiceWorker, splitsHandler);
+      InputSplitsHandler splitsHandler,
+      ZooKeeperExt zooKeeperExt)  {
+    super(context, configuration, bspServiceWorker, splitsHandler,
+        zooKeeperExt);
     this.vertexInputFormat = vertexInputFormat;
 
     inputSplitMaxVertices = configuration.getInputSplitMaxVertices();
@@ -133,11 +136,6 @@ public class VertexInputSplitsCallable<I extends WritableComparable,
     return vertexInputFormat;
   }
 
-  @Override
-  public InputType getInputType() {
-    return InputType.VERTEX;
-  }
-
   /**
    * Read vertices from input split.  If testing, the user may request a
    * maximum number of vertices to be read from an input split.
@@ -150,17 +148,18 @@ public class VertexInputSplitsCallable<I extends WritableComparable,
   @Override
   protected VertexEdgeCount readInputSplit(
       InputSplit inputSplit) throws IOException, InterruptedException {
+    // YH: this will be a user-specified VertexReader
     VertexReader<I, V, E> vertexReader =
         vertexInputFormat.createVertexReader(inputSplit, context);
     vertexReader.setConf(configuration);
 
-    WorkerThreadGlobalCommUsage globalCommUsage =
+    WorkerThreadAggregatorUsage aggregatorUsage =
       this.bspServiceWorker
         .getAggregatorHandler().newThreadAggregatorUsage();
 
     vertexReader.initialize(inputSplit, context);
     // Set aggregator usage to vertex reader
-    vertexReader.setWorkerGlobalCommUsage(globalCommUsage);
+    vertexReader.setWorkerAggregatorUse(aggregatorUsage);
 
     long inputSplitVerticesLoaded = 0;
     long inputSplitVerticesFiltered = 0;
@@ -197,6 +196,9 @@ public class VertexInputSplitsCallable<I extends WritableComparable,
         continue;
       }
 
+      // YH: by default, translateEdge will be null (it's used to do
+      // "expensive translations" when vertex are first added)
+      //
       // Before saving to partition-store translate all edges (if present)
       if (translateEdge != null) {
         // only iff vertexInput reads edges also
@@ -227,6 +229,9 @@ public class VertexInputSplitsCallable<I extends WritableComparable,
           readerVertex.setEdges(vertexOutEdges);
         }
       }
+
+      // YH: we don't figure out boundary vertices here, b/c they still
+      // need to be transferred to their correct owning worker
 
       PartitionOwner partitionOwner =
           bspServiceWorker.getVertexPartitionOwner(readerVertex.getId());
@@ -276,7 +281,6 @@ public class VertexInputSplitsCallable<I extends WritableComparable,
     WorkerProgress.get().incrementVertexInputSplitsLoaded();
 
     return new VertexEdgeCount(inputSplitVerticesLoaded,
-        inputSplitEdgesLoaded + edgesSinceLastUpdate, 0);
+        inputSplitEdgesLoaded + edgesSinceLastUpdate);
   }
 }
-
